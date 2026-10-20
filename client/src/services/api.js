@@ -1,0 +1,81 @@
+const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
+
+class ApiClient {
+  constructor(baseUrl) {
+    this.baseUrl = baseUrl;
+  }
+
+  getToken() {
+    return localStorage.getItem('seatflow_token');
+  }
+
+  setToken(token) {
+    if (token) {
+      localStorage.setItem('seatflow_token', token);
+    } else {
+      localStorage.removeItem('seatflow_token');
+    }
+  }
+
+  async request(endpoint, options = {}) {
+    const url = `${this.baseUrl}${endpoint}`;
+    const headers = {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    };
+
+    const token = this.getToken();
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const config = {
+      ...options,
+      headers,
+    };
+
+    if (config.body && typeof config.body === 'object') {
+      config.body = JSON.stringify(config.body);
+    }
+
+    const response = await fetch(url, config);
+    const data = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      const error = new Error(data?.error?.message || 'Request failed');
+      error.statusCode = response.status;
+      error.code = data?.error?.code || 'UNKNOWN_ERROR';
+      error.details = data?.error?.details || null;
+      throw error;
+    }
+
+    return data;
+  }
+
+  // Health
+  getHealth() {
+    return this.request('/health');
+  }
+
+  // Auth
+  register(userData) {
+    return this.request('/auth/register', {
+      method: 'POST',
+      body: userData,
+    });
+  }
+
+  login(credentials) {
+    return this.request('/auth/login', {
+      method: 'POST',
+      body: credentials,
+    });
+  }
+
+  getMe() {
+    return this.request('/auth/me');
+  }
+}
+
+export const api = new ApiClient(BASE_URL);
+export default api;
