@@ -1,0 +1,3 @@
+// SeatFlow Services
+// Core domain services to be populated in Session 2 (registration, event) and Session 3 (notification, audit).
+module.exports = {};

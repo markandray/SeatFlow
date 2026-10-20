@@ -1,0 +1,3 @@
+// SeatFlow Scripts
+// Load test script to be implemented in Session 2 and seed script in Session 5.
+module.exports = {};
