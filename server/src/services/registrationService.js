@@ -3,6 +3,7 @@ const Registration = require('../models/Registration');
 const AuditLog = require('../models/AuditLog');
 const Notification = require('../models/Notification');
 const ApiError = require('../utils/ApiError');
+const { withLock } = require('../utils/keyedMutex');
 const env = require('../config/env');
 
 /**
@@ -45,11 +46,21 @@ async function expireStaleOffers(eventId) {
   return expired;
 }
 
+// Hook for testing race conditions: optional hook between seat grab and head pop
+let preHeadPopHook = null;
+function setPreHeadPopHook(fn) {
+  preHeadPopHook = fn;
+}
+
 /**
- * 6.2 allocate(eventId)
- * The single path used by register, cancel, decline, expiry, capacity increase, and the sweeper.
+ * 6.2 allocateUnlocked(eventId)
+ * The raw allocation logic. SAFETY comes from the guarded atomic updates
+ * below (seat grab guarded by heldSeats < capacity, head-pop guarded by
+ * status WAITLISTED). It is safe to call concurrently; the per-event lock in
+ * allocate() only makes instant-confirm deterministic, it is not needed for
+ * correctness. Exported for the safety test.
  */
-async function allocate(eventId) {
+async function allocateUnlocked(eventId) {
   await expireStaleOffers(eventId);
   const granted = [];
 
@@ -70,14 +81,61 @@ async function allocate(eventId) {
 
     if (!ev) break; // full, or event not open
 
-    // 2. take the head of the waitlist atomically
+    if (preHeadPopHook) {
+      await preHeadPopHook(eventId);
+    }
+
+    // 2. take the head of the waitlist atomically with update pipeline
     const expiresAt = new Date(
       Math.min(now.getTime() + env.OFFER_MINUTES * 60000, ev.startsAt.getTime())
     );
 
+    const isInstantConfirm = {
+      $and: [
+        { $eq: ['$registering', true] },
+        { $gte: ['$createdAt', { $subtract: ['$$NOW', 15000] }] },
+      ],
+    };
+
+    const pipeline = [
+      {
+        $set: {
+          status: {
+            $cond: {
+              if: isInstantConfirm,
+              then: 'CONFIRMED',
+              else: 'OFFERED',
+            },
+          },
+          confirmedAt: {
+            $cond: {
+              if: isInstantConfirm,
+              then: '$$NOW',
+              else: '$confirmedAt',
+            },
+          },
+          offeredAt: {
+            $cond: {
+              if: isInstantConfirm,
+              then: null,
+              else: '$$NOW',
+            },
+          },
+          offerExpiresAt: {
+            $cond: {
+              if: isInstantConfirm,
+              then: null,
+              else: expiresAt,
+            },
+          },
+          registering: false,
+        },
+      },
+    ];
+
     const reg = await Registration.findOneAndUpdate(
       { eventId, status: 'WAITLISTED' },
-      { status: 'OFFERED', offeredAt: now, offerExpiresAt: expiresAt },
+      pipeline,
       { sort: { seq: 1 }, new: true }
     );
 
@@ -87,20 +145,35 @@ async function allocate(eventId) {
       break;
     }
 
-    await AuditLog.create({
-      eventId,
-      actorId: null, // system
-      action: 'OFFER_GRANTED',
-      registrationId: reg._id,
-      payload: { userId: reg.userId, offerExpiresAt: expiresAt },
-    });
-
-    await Notification.create({
-      userId: reg.userId,
-      eventId,
-      type: 'OFFER',
-      message: 'A seat has opened up! Claim your offer before it expires.',
-    });
+    if (reg.status === 'CONFIRMED') {
+      await AuditLog.create({
+        eventId,
+        actorId: reg.userId,
+        action: 'AUTO_CONFIRMED',
+        registrationId: reg._id,
+        payload: { confirmedAt: reg.confirmedAt },
+      });
+      await Notification.create({
+        userId: reg.userId,
+        eventId,
+        type: 'CONFIRMED',
+        message: 'Your registration is confirmed!',
+      });
+    } else {
+      await AuditLog.create({
+        eventId,
+        actorId: null, // system
+        action: 'OFFER_GRANTED',
+        registrationId: reg._id,
+        payload: { userId: reg.userId, offerExpiresAt: reg.offerExpiresAt },
+      });
+      await Notification.create({
+        userId: reg.userId,
+        eventId,
+        type: 'OFFER',
+        message: 'A seat has opened up! Claim your offer before it expires.',
+      });
+    }
 
     granted.push(reg);
   }
@@ -109,12 +182,26 @@ async function allocate(eventId) {
 }
 
 /**
+ * allocate(eventId)
+ * The single path used by register, cancel, decline, expiry, capacity increase,
+ * and the sweeper. Runs allocateUnlocked one-at-a-time per event inside this
+ * process. Why: a registrant keeps registering=true until its OWN allocate has
+ * finished. Because allocations for one event are serialized, any allocation
+ * that could pop that registrant finishes before the registrant's flag is
+ * cleared, so the registrant is instantly confirmed (not offered) whenever a
+ * seat was free for them. Assumes a single API process (see decisions.md).
+ */
+async function allocate(eventId) {
+  return withLock(String(eventId), () => allocateUnlocked(eventId));
+}
+
+/**
  * 6.3 Register
  * 1. Validate: event is PUBLISHED, now is before registrationDeadline, now is before startsAt.
  * 2. Atomically findOneAndUpdate({_id}, {$inc:{nextSeq:1}}, {new:true}) to get this registration's seq.
- * 3. Insert the Registration as WAITLISTED. On a duplicate-key error return 409 ("already registered").
- * 4. Call allocate(eventId).
- * 5. Reload this registration. If its status is OFFERED, immediately confirm it with a guarded update.
+ * 3. Insert the Registration as WAITLISTED with registering: true. On duplicate-key error return 409.
+ * 4. Call allocate(eventId) (serialized per event).
+ * 5. Clear the registering flag (always, even if allocate throws) and reload.
  * 6. Return the final status and position.
  */
 async function register(eventId, userId) {
@@ -147,7 +234,7 @@ async function register(eventId, userId) {
 
   const seq = updatedEvent.nextSeq;
 
-  // 3. Insert as WAITLISTED (guarded by partial unique index)
+  // 3. Insert as WAITLISTED with registering: true (guarded by partial unique index)
   let reg;
   try {
     reg = await Registration.create({
@@ -155,6 +242,7 @@ async function register(eventId, userId) {
       userId,
       status: 'WAITLISTED',
       seq,
+      registering: true,
     });
   } catch (err) {
     if (err.code === 11000) {
@@ -175,49 +263,16 @@ async function register(eventId, userId) {
     payload: { seq },
   });
 
-  // 4. Run allocation
-  await allocate(eventId);
-
-  // 5. Reload registration and auto-confirm if OFFERED
-  let currentReg = await Registration.findById(reg._id);
-
-  // If another concurrent request's allocate was in-flight, give it a brief moment to settle
-  if (currentReg && currentReg.status === 'WAITLISTED') {
-    for (let attempt = 0; attempt < 10; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      const reloaded = await Registration.findById(reg._id);
-      if (reloaded && reloaded.status !== 'WAITLISTED') {
-        currentReg = reloaded;
-        break;
-      }
-    }
+  // 4 + 5. Run allocation; always clear the registering flag afterwards
+  try {
+    await allocate(eventId);
+  } finally {
+    await Registration.updateOne({ _id: reg._id, registering: true }, { registering: false });
   }
 
-  if (currentReg && currentReg.status === 'OFFERED') {
-    const confirmed = await Registration.findOneAndUpdate(
-      { _id: reg._id, userId, status: 'OFFERED' },
-      { status: 'CONFIRMED', confirmedAt: new Date(), offerExpiresAt: null },
-      { new: true }
-    );
-    if (confirmed) {
-      currentReg = confirmed;
-      await AuditLog.create({
-        eventId,
-        actorId: userId,
-        action: 'AUTO_CONFIRMED',
-        registrationId: confirmed._id,
-        payload: { confirmedAt: confirmed.confirmedAt },
-      });
-      await Notification.create({
-        userId,
-        eventId,
-        type: 'CONFIRMED',
-        message: 'Your registration is confirmed!',
-      });
-    }
-  }
+  // 6. Reload registration and return status and position
+  const currentReg = await Registration.findById(reg._id);
 
-  // 6. Return final status and position
   let position = null;
   if (currentReg.status === 'WAITLISTED') {
     position =
@@ -308,7 +363,9 @@ async function getMyRegistrations(userId) {
 module.exports = {
   expireStaleOffers,
   allocate,
+  allocateUnlocked,
   register,
   cancelWaitlisted,
   getMyRegistrations,
+  setPreHeadPopHook,
 };
