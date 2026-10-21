@@ -171,10 +171,12 @@ async function allocate(eventId) {
 
 1. Validate: event is `PUBLISHED`, now is before `registrationDeadline`, now is before `startsAt`.
 2. Atomically `findOneAndUpdate({_id}, {$inc:{nextSeq:1}}, {new:true})` to get this registration's `seq`.
-3. Insert the Registration as `WAITLISTED`. On a duplicate-key error return **409** ("already registered"). Skipped `seq` numbers are harmless.
-4. Call `allocate(eventId)`.
-5. Reload this registration. **If its status is `OFFERED`, immediately confirm it** with a guarded update (`{_id, userId, status:'OFFERED'} -> CONFIRMED`) so first-come registration is instant. (Another concurrent request's `allocate` may have been the one that offered it, which is why we check after the loop and not inside it.)
-6. Return the final status and position.
+3. Insert the Registration as `WAITLISTED` with `registering: true`. On a duplicate-key error return **409** ("already registered"). Skipped `seq` numbers are harmless.
+4. Call `allocate(eventId)`. Inside `allocate()`, taking the head of the waitlist is executed as ONE atomic `findOneAndUpdate` with an update pipeline:
+   - If `registering: true` AND `createdAt` is within the last 15 seconds (`$$NOW`), the registration immediately transitions to `CONFIRMED` (`confirmedAt = $$NOW, offerExpiresAt = null, registering = false`).
+   - Otherwise (e.g. waitlist cascade from a cancellation or expiry), it transitions to `OFFERED` with `offerExpiresAt`.
+   *Why the `registering` flag exists:* Under high concurrency, another concurrent request's `allocate` may be the one that pops this registration from the waitlist. Performing the conditional confirmation atomically inside the MongoDB pipeline makes instant-confirm strictly deterministic and eliminates the need for timing-based sleep or polling loops.
+5. In `register()`: call `updateOne({ _id, registering: true }, { registering: false })` to guarantee the flag is cleared, reload the registration, and return the final status and position.
 
 This makes fairness automatic: nobody can jump ahead of people already waiting, because everyone enters through the waitlist and `allocate` always takes the lowest `seq`.
 

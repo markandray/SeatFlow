@@ -119,3 +119,18 @@ Authentication uses stateless JSON Web Tokens passed in standard `Authorization:
 
 ### Rationale
 - Standard, cross-origin compatible, and free of CSRF vulnerabilities inherent to cookie-based approaches across separate frontend/backend deployment domains (e.g. Vercel frontend + Render backend).
+
+---
+
+## 11. Deterministic Instant-Confirm via `registering` Flag and Atomic Update Pipeline
+
+### Decision
+Registration replaces any client-side or service-layer sleep/polling loops with a single atomic update pipeline in MongoDB. When a user calls `register()`, their registration is created with `registering: true`. During `allocate(eventId)`, taking the head of the waitlist evaluates an atomic pipeline condition:
+- If `registering === true` AND `createdAt` is within the last 15 seconds (`$$NOW`), the registration transitions directly to `CONFIRMED` (`confirmedAt = $$NOW, offerExpiresAt = null, registering = false`).
+- Otherwise (e.g., when a seat is freed by cancellation or expiry), it transitions to `OFFERED` with an `offerExpiresAt` countdown.
+
+### Rationale
+- **Zero timing waits:** Eliminates all non-deterministic sleep, retry, or polling loops in `register()`.
+- **Race-free concurrent execution:** When 50 parallel registration requests arrive simultaneously, one request's `allocate` loop may pop another request's waitlisted entry. Because the transition is evaluated atomically inside the database engine during the head-of-waitlist pop, the registration is guaranteed to become `CONFIRMED` instantly and safely, without read-then-write windows or races.
+- **Safety guarantee:** The 15-second freshness check on `createdAt` ensures that stale registrations cannot be accidentally auto-confirmed if a crash occurs before `registering` is cleared.
+
