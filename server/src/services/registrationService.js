@@ -180,6 +180,19 @@ async function register(eventId, userId) {
 
   // 5. Reload registration and auto-confirm if OFFERED
   let currentReg = await Registration.findById(reg._id);
+
+  // If another concurrent request's allocate was in-flight, give it a brief moment to settle
+  if (currentReg && currentReg.status === 'WAITLISTED') {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      const reloaded = await Registration.findById(reg._id);
+      if (reloaded && reloaded.status !== 'WAITLISTED') {
+        currentReg = reloaded;
+        break;
+      }
+    }
+  }
+
   if (currentReg && currentReg.status === 'OFFERED') {
     const confirmed = await Registration.findOneAndUpdate(
       { _id: reg._id, userId, status: 'OFFERED' },
