@@ -75,6 +75,56 @@ class ApiClient {
   getMe() {
     return this.request('/auth/me');
   }
+
+  // Events
+  getEvents(query = {}) {
+    const params = new URLSearchParams();
+    if (query.search) params.append('search', query.search);
+    if (query.status) params.append('status', query.status);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    return this.request(`/events${qs}`);
+  }
+
+  getEventById(id) {
+    return this.request(`/events/${id}`);
+  }
+
+  createEvent(eventData) {
+    return this.request('/events', {
+      method: 'POST',
+      body: eventData,
+    });
+  }
+
+  updateEvent(id, updateData) {
+    return this.request(`/events/${id}`, {
+      method: 'PATCH',
+      body: updateData,
+    });
+  }
+
+  publishEvent(id) {
+    return this.request(`/events/${id}/publish`, {
+      method: 'POST',
+    });
+  }
+
+  // Registrations
+  registerForEvent(eventId) {
+    return this.request(`/events/${eventId}/register`, {
+      method: 'POST',
+    });
+  }
+
+  getMyRegistrations() {
+    return this.request('/registrations/mine');
+  }
+
+  cancelRegistration(registrationId) {
+    return this.request(`/registrations/${registrationId}/cancel`, {
+      method: 'POST',
+    });
+  }
 }
 
 export const api = new ApiClient(BASE_URL);
