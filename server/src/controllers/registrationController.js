@@ -12,10 +12,17 @@ const getMine = asyncHandler(async (req, res) => {
 });
 
 const cancel = asyncHandler(async (req, res) => {
-  const registration = await registrationService.cancelWaitlisted(
-    req.params.id,
-    req.user._id
-  );
+  const registration = await registrationService.cancelRegistration(req.params.id, req.user._id);
+  res.status(200).json({ registration });
+});
+
+const claim = asyncHandler(async (req, res) => {
+  const registration = await registrationService.claimOffer(req.params.id, req.user._id);
+  res.status(200).json({ registration, serverTime: new Date().toISOString() });
+});
+
+const decline = asyncHandler(async (req, res) => {
+  const registration = await registrationService.declineOffer(req.params.id, req.user._id);
   res.status(200).json({ registration });
 });
 
@@ -23,4 +30,6 @@ module.exports = {
   register,
   getMine,
   cancel,
+  claim,
+  decline,
 };

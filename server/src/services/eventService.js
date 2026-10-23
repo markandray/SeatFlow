@@ -2,7 +2,7 @@ const Event = require('../models/Event');
 const Registration = require('../models/Registration');
 const AuditLog = require('../models/AuditLog');
 const ApiError = require('../utils/ApiError');
-const { expireStaleOffers, allocate } = require('./registrationService');
+const { refreshEvent, allocate } = require('./registrationService');
 
 /**
  * Create a new event in DRAFT status
@@ -105,10 +105,7 @@ async function getEvents(query = {}) {
  */
 async function getEventById(eventId, userId = null) {
   // Lazy expiry on read (Section 6.7)
-  const expired = await expireStaleOffers(eventId);
-  if (expired > 0) {
-    await allocate(eventId);
-  }
+  await refreshEvent(eventId);
 
   const event = await Event.findById(eventId).populate('organizerId', 'name email');
   if (!event) {

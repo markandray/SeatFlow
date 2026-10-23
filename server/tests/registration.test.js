@@ -4,9 +4,15 @@ const app = require('../src/app');
 const User = require('../src/models/User');
 const Event = require('../src/models/Event');
 const Registration = require('../src/models/Registration');
+const AuditLog = require('../src/models/AuditLog');
 const env = require('../src/config/env');
 const { checkInvariants } = require('./helpers/invariants');
-const { setPreHeadPopHook, allocateUnlocked } = require('../src/services/registrationService');
+const {
+  setPreHeadPopHook,
+  allocateUnlocked,
+  refreshEvent,
+  reconcileEvent,
+} = require('../src/services/registrationService');
 
 describe('Registration & Concurrency Invariants (Workflow 2)', () => {
   let organizer;
@@ -263,7 +269,9 @@ describe('Registration & Concurrency Invariants (Workflow 2)', () => {
 
     try {
       for (const hookEnabled of [false, true]) {
-        setPreHeadPopHook(hookEnabled ? async () => Promise.resolve() : null);
+        setPreHeadPopHook(
+          hookEnabled ? () => new Promise((resolve) => setImmediate(resolve)) : null
+        );
         for (let repetition = 0; repetition < 10; repetition++, runId++) {
           const event = await Event.create({
             organizerId: organizer._id,
@@ -347,5 +355,185 @@ describe('Registration & Concurrency Invariants (Workflow 2)', () => {
     expect(held).toHaveLength(5);
     expect(new Set(held.map((reg) => reg.userId.toString())).size).toBe(held.length);
     await checkInvariants(event._id);
+  });
+
+  it('Test 3: claim racing expiry has one guarded outcome and keeps the seat count correct', async () => {
+    const event = await Event.create({
+      organizerId: organizer._id,
+      title: 'Claim Expiry Race',
+      startsAt: new Date(Date.now() + 86400000),
+      registrationDeadline: new Date(Date.now() + 43200000),
+      capacity: 1,
+      heldSeats: 1,
+      status: 'PUBLISHED',
+    });
+    const [offeree, waiter] = await User.insertMany([
+      { name: 'Offeree', email: 'offeree@example.com', passwordHash: 'hash', role: 'student' },
+      { name: 'Waiter', email: 'waiter@example.com', passwordHash: 'hash', role: 'student' },
+    ]);
+    const offered = await Registration.create({
+      eventId: event._id,
+      userId: offeree._id,
+      status: 'OFFERED',
+      seq: 1,
+      offeredAt: new Date(Date.now() - 60000),
+      offerExpiresAt: new Date(Date.now() - 1),
+    });
+    await Registration.create({
+      eventId: event._id,
+      userId: waiter._id,
+      status: 'WAITLISTED',
+      seq: 2,
+      registering: false,
+    });
+
+    const [claimResponse] = await Promise.all([
+      request(app)
+        .post(`/api/registrations/${offered._id}/claim`)
+        .set('Authorization', `Bearer ${signToken(offeree)}`),
+      refreshEvent(event._id),
+    ]);
+
+    expect(claimResponse.statusCode).toBe(410);
+    expect((await Registration.findById(offered._id)).status).toBe('EXPIRED');
+    expect((await Registration.findOne({ eventId: event._id, userId: waiter._id })).status).toBe('OFFERED');
+    expect((await Event.findById(event._id)).heldSeats).toBe(1);
+    await checkInvariants(event._id);
+  });
+
+  it('Test 4: cancel and offer expiry cascade to the next waitlisted registration', async () => {
+    const event = await Event.create({
+      organizerId: organizer._id,
+      title: 'Offer Cascade',
+      startsAt: new Date(Date.now() + 86400000),
+      registrationDeadline: new Date(Date.now() + 43200000),
+      capacity: 1,
+      heldSeats: 1,
+      status: 'PUBLISHED',
+    });
+    const users = await User.insertMany(
+      Array.from({ length: 3 }, (_, i) => ({
+        name: `Cascade ${i}`,
+        email: `cascade_${i}@example.com`,
+        passwordHash: 'hash',
+        role: 'student',
+      }))
+    );
+    const confirmed = await Registration.create({
+      eventId: event._id,
+      userId: users[0]._id,
+      status: 'CONFIRMED',
+      seq: 1,
+      confirmedAt: new Date(),
+    });
+    const [first, second] = await Registration.insertMany([
+      { eventId: event._id, userId: users[1]._id, status: 'WAITLISTED', seq: 2, registering: false },
+      { eventId: event._id, userId: users[2]._id, status: 'WAITLISTED', seq: 3, registering: false },
+    ]);
+
+    const cancelResponse = await request(app)
+      .post(`/api/registrations/${confirmed._id}/cancel`)
+      .set('Authorization', `Bearer ${signToken(users[0])}`);
+    expect(cancelResponse.statusCode).toBe(200);
+    expect((await Registration.findById(first._id)).status).toBe('OFFERED');
+
+    await Registration.updateOne({ _id: first._id }, { offerExpiresAt: new Date(Date.now() - 1) });
+    await refreshEvent(event._id);
+    expect((await Registration.findById(first._id)).status).toBe('EXPIRED');
+    expect((await Registration.findById(second._id)).status).toBe('OFFERED');
+    expect((await Event.findById(event._id)).heldSeats).toBe(1);
+    await checkInvariants(event._id);
+  });
+
+  it('Test 7: GET event lazily expires stale offers and reallocates the seat', async () => {
+    const event = await Event.create({
+      organizerId: organizer._id,
+      title: 'Lazy Expiry',
+      startsAt: new Date(Date.now() + 86400000),
+      registrationDeadline: new Date(Date.now() + 43200000),
+      capacity: 1,
+      heldSeats: 1,
+      status: 'PUBLISHED',
+    });
+    const [offeree, waiter] = await User.insertMany([
+      { name: 'Lazy Offeree', email: 'lazy_offeree@example.com', passwordHash: 'hash', role: 'student' },
+      { name: 'Lazy Waiter', email: 'lazy_waiter@example.com', passwordHash: 'hash', role: 'student' },
+    ]);
+    const stale = await Registration.create({
+      eventId: event._id,
+      userId: offeree._id,
+      status: 'OFFERED',
+      seq: 1,
+      offeredAt: new Date(Date.now() - 60000),
+      offerExpiresAt: new Date(Date.now() - 1),
+    });
+    const next = await Registration.create({
+      eventId: event._id,
+      userId: waiter._id,
+      status: 'WAITLISTED',
+      seq: 2,
+      registering: false,
+    });
+
+    const response = await request(app).get(`/api/events/${event._id}`);
+    expect(response.statusCode).toBe(200);
+    expect((await Registration.findById(stale._id)).status).toBe('EXPIRED');
+    expect((await Registration.findById(next._id)).status).toBe('OFFERED');
+    await checkInvariants(event._id);
+  });
+
+  it('Test 12: reconciler corrects stable drift, leaves matching counters, and skips transient counts', async () => {
+    const event = await Event.create({
+      organizerId: organizer._id,
+      title: 'Reconciler Stable Drift',
+      startsAt: new Date(Date.now() + 86400000),
+      registrationDeadline: new Date(Date.now() + 43200000),
+      capacity: 3,
+      heldSeats: 0,
+      status: 'PUBLISHED',
+    });
+    const users = await User.insertMany([
+      { name: 'Held One', email: 'held_one@example.com', passwordHash: 'hash', role: 'student' },
+      { name: 'Held Two', email: 'held_two@example.com', passwordHash: 'hash', role: 'student' },
+    ]);
+    await Registration.create({
+      eventId: event._id,
+      userId: users[0]._id,
+      status: 'CONFIRMED',
+      seq: 1,
+      confirmedAt: new Date(),
+    });
+
+    expect(await reconcileEvent(event._id, { recheckMs: 0 })).toBe(true);
+    expect((await Event.findById(event._id)).heldSeats).toBe(1);
+    const auditCount = await AuditLog.countDocuments({ eventId: event._id, action: 'RECONCILED' });
+    expect(await reconcileEvent(event._id, { recheckMs: 0 })).toBe(false);
+    expect(await AuditLog.countDocuments({ eventId: event._id, action: 'RECONCILED' })).toBe(auditCount);
+
+    const transientEvent = await Event.create({
+      organizerId: organizer._id,
+      title: 'Reconciler Transient Mismatch',
+      startsAt: new Date(Date.now() + 86400000),
+      registrationDeadline: new Date(Date.now() + 43200000),
+      capacity: 3,
+      heldSeats: 0,
+      status: 'PUBLISHED',
+    });
+    expect(
+      await reconcileEvent(transientEvent._id, {
+        recheckMs: 0,
+        afterFirstCount: async () => {
+          await Registration.create({
+            eventId: transientEvent._id,
+            userId: users[1]._id,
+            status: 'CONFIRMED',
+            seq: 1,
+            confirmedAt: new Date(),
+          });
+        },
+      })
+    ).toBe(false);
+    expect((await Event.findById(transientEvent._id)).heldSeats).toBe(0);
+    expect(await AuditLog.countDocuments({ eventId: transientEvent._id, action: 'RECONCILED' })).toBe(0);
   });
 });

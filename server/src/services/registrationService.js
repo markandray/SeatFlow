@@ -46,6 +46,12 @@ async function expireStaleOffers(eventId) {
   return expired;
 }
 
+async function refreshEvent(eventId) {
+  const expired = await expireStaleOffers(eventId);
+  if (expired > 0) await allocate(eventId);
+  return expired;
+}
+
 // Hook for testing race conditions: optional hook between seat grab and head pop
 let preHeadPopHook = null;
 function setPreHeadPopHook(fn) {
@@ -289,14 +295,16 @@ async function register(eventId, userId) {
   };
 }
 
-/**
- * Minimal cancel for WAITLISTED registration (Session 2 requirement for test 5)
- * Cancelling from WAITLISTED changes status only and frees no seat.
- */
-async function cancelWaitlisted(registrationId, userId) {
+/** Guarded student cancellation and offer decline transitions. */
+async function cancelRegistration(registrationId, userId, { offeredOnly = false } = {}) {
+  const now = new Date();
   const reg = await Registration.findOneAndUpdate(
-    { _id: registrationId, userId, status: 'WAITLISTED' },
-    { status: 'CANCELLED', cancelledAt: new Date() },
+    {
+      _id: registrationId,
+      userId,
+      status: { $in: offeredOnly ? ['OFFERED'] : ['WAITLISTED', 'OFFERED', 'CONFIRMED'] },
+    },
+    { $set: { status: 'CANCELLED', cancelledAt: now } },
     { new: true }
   );
 
@@ -315,22 +323,99 @@ async function cancelWaitlisted(registrationId, userId) {
     );
   }
 
+  // Only held states have either offeredAt or confirmedAt; WAITLISTED cancel frees no seat.
+  const seatWasHeld = Boolean(reg.offeredAt || reg.confirmedAt);
+  if (seatWasHeld) {
+    await Event.updateOne({ _id: reg.eventId }, { $inc: { heldSeats: -1 } });
+  }
+
   await AuditLog.create({
     eventId: reg.eventId,
     actorId: userId,
-    action: 'CANCEL_WAITLISTED',
+    action: offeredOnly ? 'OFFER_DECLINED' : 'REGISTRATION_CANCELLED',
     registrationId: reg._id,
-    payload: { cancelledAt: reg.cancelledAt },
+    payload: { cancelledAt: reg.cancelledAt, status: reg.status },
   });
 
+  if (seatWasHeld) await allocate(reg.eventId);
+
   return reg;
+}
+
+async function claimOffer(registrationId, userId) {
+  const now = new Date();
+  const reg = await Registration.findOneAndUpdate(
+    { _id: registrationId, userId, status: 'OFFERED', offerExpiresAt: { $gt: now } },
+    { $set: { status: 'CONFIRMED', confirmedAt: now, offerExpiresAt: null } },
+    { new: true }
+  );
+  if (!reg) {
+    const existing = await Registration.findById(registrationId);
+    if (!existing) throw new ApiError(404, 'NOT_FOUND', 'Registration not found');
+    if (existing.userId.toString() !== userId.toString()) {
+      throw new ApiError(403, 'FORBIDDEN', 'You do not own this registration');
+    }
+    throw new ApiError(410, 'OFFER_GONE', 'This offer expired or is no longer available');
+  }
+
+  await AuditLog.create({
+    eventId: reg.eventId,
+    actorId: userId,
+    action: 'OFFER_CLAIMED',
+    registrationId: reg._id,
+    payload: { confirmedAt: reg.confirmedAt },
+  });
+  await Notification.create({
+    userId,
+    eventId: reg.eventId,
+    type: 'CONFIRMED',
+    message: 'Your registration is confirmed!',
+  });
+  return reg;
+}
+
+async function reconcileEvent(eventId, { recheckMs = 2000, afterFirstCount } = {}) {
+  const event = await Event.findOne({ _id: eventId, status: 'PUBLISHED' });
+  if (!event) return false;
+
+  const activeStatuses = ['OFFERED', 'CONFIRMED', 'CHECKED_IN'];
+  const firstCount = await Registration.countDocuments({ eventId, status: { $in: activeStatuses } });
+  if (afterFirstCount) await afterFirstCount({ eventId, firstCount });
+  if (recheckMs > 0) await new Promise((resolve) => setTimeout(resolve, recheckMs));
+  const secondCount = await Registration.countDocuments({ eventId, status: { $in: activeStatuses } });
+  if (firstCount !== secondCount) return false;
+
+  let reconciled = false;
+  await withLock(String(eventId), async () => {
+    const current = await Event.findOne({ _id: eventId, status: 'PUBLISHED' });
+    if (!current || current.heldSeats === secondCount) return;
+    const result = await Event.updateOne(
+      { _id: eventId, heldSeats: current.heldSeats },
+      { $set: { heldSeats: secondCount } }
+    );
+    if (result.modifiedCount !== 1) return;
+    await AuditLog.create({
+      eventId,
+      actorId: null,
+      action: 'RECONCILED',
+      payload: { previousHeldSeats: current.heldSeats, heldSeats: secondCount },
+    });
+    reconciled = true;
+  });
+  return reconciled;
 }
 
 /**
  * Get user's active/all registrations with current waitlist position and serverTime
  */
 async function getMyRegistrations(userId) {
-  const registrations = await Registration.find({ userId })
+  let registrations = await Registration.find({ userId })
+    .populate('eventId', 'title startsAt location status capacity heldSeats')
+    .sort({ createdAt: -1 });
+
+  const eventIds = [...new Set(registrations.map((reg) => (reg.eventId?._id || reg.eventId)?.toString()).filter(Boolean))];
+  for (const eventId of eventIds) await refreshEvent(eventId);
+  registrations = await Registration.find({ userId })
     .populate('eventId', 'title startsAt location status capacity heldSeats')
     .sort({ createdAt: -1 });
 
@@ -351,6 +436,7 @@ async function getMyRegistrations(userId) {
     results.push({
       ...reg.toObject(),
       position,
+      serverTime: now.toISOString(),
     });
   }
 
@@ -362,10 +448,15 @@ async function getMyRegistrations(userId) {
 
 module.exports = {
   expireStaleOffers,
+  refreshEvent,
   allocate,
   allocateUnlocked,
   register,
-  cancelWaitlisted,
+  cancelWaitlisted: (registrationId, userId) => cancelRegistration(registrationId, userId),
+  cancelRegistration,
+  declineOffer: (registrationId, userId) => cancelRegistration(registrationId, userId, { offeredOnly: true }),
+  claimOffer,
+  reconcileEvent,
   getMyRegistrations,
   setPreHeadPopHook,
 };
