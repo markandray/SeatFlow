@@ -6,7 +6,7 @@ const Event = require('../src/models/Event');
 const Registration = require('../src/models/Registration');
 const env = require('../src/config/env');
 const { checkInvariants } = require('./helpers/invariants');
-const { setPreHeadPopHook } = require('../src/services/registrationService');
+const { setPreHeadPopHook, allocateUnlocked } = require('../src/services/registrationService');
 
 describe('Registration & Concurrency Invariants (Workflow 2)', () => {
   let organizer;
@@ -307,4 +307,45 @@ describe('Registration & Concurrency Invariants (Workflow 2)', () => {
       setPreHeadPopHook(null);
     }
   }, 120000);
+
+  it('Test 11: allocation remains safe with 20 unlocked allocators racing', async () => {
+    const event = await Event.create({
+      organizerId: organizer._id,
+      title: 'Unlocked Allocation Safety',
+      startsAt: new Date(Date.now() + 86400000),
+      registrationDeadline: new Date(Date.now() + 43200000),
+      capacity: 5,
+      heldSeats: 0,
+      nextSeq: 30,
+      status: 'PUBLISHED',
+    });
+
+    const users = await User.insertMany(
+      Array.from({ length: 30 }, (_, i) => ({
+        name: `Unlocked Student ${i}`,
+        email: `unlocked_${Date.now()}_${i}@example.com`,
+        passwordHash: 'hash',
+        role: 'student',
+      }))
+    );
+    await Registration.insertMany(
+      users.map((user, i) => ({
+        eventId: event._id,
+        userId: user._id,
+        status: 'WAITLISTED',
+        seq: i + 1,
+        registering: false,
+      }))
+    );
+
+    await Promise.all(Array.from({ length: 20 }, () => allocateUnlocked(event._id)));
+
+    const updatedEvent = await Event.findById(event._id);
+    const registrations = await Registration.find({ eventId: event._id });
+    const held = registrations.filter((reg) => ['OFFERED', 'CONFIRMED'].includes(reg.status));
+    expect(updatedEvent.heldSeats).toBe(5);
+    expect(held).toHaveLength(5);
+    expect(new Set(held.map((reg) => reg.userId.toString())).size).toBe(held.length);
+    await checkInvariants(event._id);
+  });
 });
