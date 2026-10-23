@@ -5,7 +5,7 @@
 > - This file is the single source of truth. Re-read it at the start of every session.
 > - Implement ONLY the session you are asked to do (see section 13). Do not start later sessions.
 > - Make small commits with clear messages (`feat:`, `fix:`, `test:`, `docs:`). Never one giant commit. Never commit `.env`; commit `.env.example` only. Run `git status` before every push.
-> - If anything is ambiguous, or you want to deviate from this spec, **ask first**. Do not silently choose a different design. In particular, never replace the atomic operations in section 6 with read-then-write logic, and never add timing-based waits (sleep, retry loops) to make a test pass.
+> - If anything is ambiguous, or you want to deviate from this spec, **ask first**. Do not silently choose a different design. In particular, never replace the atomic operations in section 6 with read-then-write logic, and never add timing-based waits (sleep, retry loops) to request flows or tests to make a race pass. The reconciler's deliberate recheck delay (6.8) is the one exception, and it must be injectable and must not run inside the lock.
 > - Application code must call `allocate()` (serialized per event), never `allocateUnlocked()`. Anything that changes `heldSeats` and then needs re-allocation (cancel, decline, expiry, capacity change, sweeper) goes through `allocate()`. The reconciler's fix runs inside `withLock`. See 6.2.
 > - Do NOT add Socket.io, Redis, payments, or extra features. Real-time is done by polling.
 > - After each session, state exactly how the human can verify it (a command or a click path), and list every deviation from this spec in your report.
