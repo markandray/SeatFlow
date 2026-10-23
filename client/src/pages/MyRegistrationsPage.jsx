@@ -1,224 +1,115 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../services/api';
+import usePolling from '../hooks/usePolling';
+
+const activeStatuses = ['WAITLISTED', 'OFFERED', 'CONFIRMED'];
 
 export default function MyRegistrationsPage() {
   const [registrations, setRegistrations] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [cancellingId, setCancellingId] = useState(null);
+  const [busyId, setBusyId] = useState(null);
   const [error, setError] = useState(null);
-  const [msg, setMsg] = useState(null);
+  const [message, setMessage] = useState(null);
+  const [fetchedAt, setFetchedAt] = useState(Date.now());
+  const [, setClock] = useState(Date.now());
 
-  const fetchRegistrations = () => {
-    setLoading(true);
-    api
-      .getMyRegistrations()
-      .then((data) => {
-        setRegistrations(data.registrations || []);
-        setError(null);
-      })
-      .catch((err) => {
-        setError(err.message || 'Failed to load registrations');
-      })
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchRegistrations();
+  const fetchRegistrations = useCallback(async () => {
+    try {
+      const data = await api.getMyRegistrations();
+      setRegistrations(data.registrations || []);
+      setFetchedAt(Date.now());
+      setError(null);
+    } catch (err) {
+      setError(err.message || 'Failed to load registrations');
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  const handleCancel = async (id) => {
-    if (!window.confirm('Are you sure you want to cancel your registration?')) {
-      return;
-    }
+  usePolling(fetchRegistrations, 5000);
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
-    setCancellingId(id);
+  const handleAction = async (id, action) => {
+    setBusyId(id);
     setError(null);
-    setMsg(null);
-
+    setMessage(null);
     try {
-      await api.cancelRegistration(id);
-      setMsg('Registration cancelled successfully.');
-      fetchRegistrations();
+      if (action === 'claim') await api.claimOffer(id);
+      else if (action === 'decline') await api.declineOffer(id);
+      else await api.cancelRegistration(id);
+      setMessage(action === 'claim' ? 'Offer claimed. Your seat is confirmed.' : 'Registration updated.');
+      await fetchRegistrations();
     } catch (err) {
-      setError(err.message || 'Failed to cancel registration');
+      setError(err.message || 'Could not update registration');
+      await fetchRegistrations();
     } finally {
-      setCancellingId(null);
-    }
-  };
-
-  const getStatusBadgeStyle = (status) => {
-    switch (status) {
-      case 'CONFIRMED':
-        return { bg: 'rgba(16, 185, 129, 0.15)', color: '#34d399', text: 'Confirmed' };
-      case 'WAITLISTED':
-        return { bg: 'rgba(245, 158, 11, 0.15)', color: '#fbbf24', text: 'Waitlisted' };
-      case 'OFFERED':
-        return { bg: 'rgba(99, 102, 241, 0.2)', color: '#818cf8', text: 'Offer Available' };
-      case 'CHECKED_IN':
-        return { bg: 'rgba(16, 185, 129, 0.25)', color: '#10b981', text: 'Checked In' };
-      case 'CANCELLED':
-        return { bg: 'rgba(239, 68, 68, 0.15)', color: '#f87171', text: 'Cancelled' };
-      case 'EXPIRED':
-        return { bg: 'rgba(100, 116, 139, 0.2)', color: '#94a3b8', text: 'Offer Expired' };
-      default:
-        return { bg: 'rgba(255, 255, 255, 0.1)', color: '#fff', text: status };
+      setBusyId(null);
     }
   };
 
   return (
     <div style={{ maxWidth: '840px', margin: '2rem auto', padding: '0 1.5rem' }}>
-      <div style={{ marginBottom: '1.5rem' }}>
-        <h1 style={{ fontSize: '1.85rem', fontWeight: 800 }}>My Registrations</h1>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem' }}>
-          View your confirmed seats, waitlist positions, and active offers.
-        </p>
-      </div>
+      <h1 style={{ fontSize: '1.85rem', fontWeight: 800 }}>My Registrations</h1>
+      <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
+        Waitlist positions and offers refresh every five seconds while this tab is visible.
+      </p>
 
-      {error && (
-        <div style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#f87171', padding: '1rem', borderRadius: 'var(--radius-md)', marginBottom: '1.5rem' }}>
-          {error}
-        </div>
-      )}
-
-      {msg && (
-        <div style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#34d399', padding: '1rem', borderRadius: 'var(--radius-md)', marginBottom: '1.5rem' }}>
-          {msg}
-        </div>
-      )}
-
-      {loading && (
-        <div style={{ textAlign: 'center', padding: '4rem', color: 'var(--text-muted)' }}>
-          Loading your registrations...
-        </div>
-      )}
-
+      {error && <div role="alert" style={{ color: '#f87171', padding: '0.8rem 0' }}>{error}</div>}
+      {message && <div role="status" style={{ color: '#34d399', padding: '0.8rem 0' }}>{message}</div>}
+      {loading && <p>Loading your registrations…</p>}
       {!loading && registrations.length === 0 && (
-        <div
-          style={{
-            textAlign: 'center',
-            padding: '4rem 2rem',
-            background: 'var(--bg-secondary)',
-            borderRadius: 'var(--radius-lg)',
-            border: '1px solid var(--border-color)',
-          }}
-        >
+        <div style={{ padding: '3rem', textAlign: 'center', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)' }}>
           <h3>No registrations yet</h3>
-          <p style={{ marginTop: '0.5rem', color: 'var(--text-secondary)' }}>
-            You have not registered for any events yet.
-          </p>
-          <Link
-            to="/"
-            style={{
-              display: 'inline-block',
-              marginTop: '1.25rem',
-              background: 'var(--accent-primary)',
-              color: '#fff',
-              padding: '0.6rem 1.2rem',
-              borderRadius: 'var(--radius-sm)',
-              textDecoration: 'none',
-              fontWeight: 600,
-            }}
-          >
-            Explore Events
-          </Link>
+          <Link to="/">Explore events</Link>
         </div>
       )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
         {registrations.map((reg) => {
-          const badge = getStatusBadgeStyle(reg.status);
-          const ev = reg.eventId;
-          const isCancelling = cancellingId === reg._id;
+          const event = reg.eventId;
+          const remaining = reg.offerExpiresAt && reg.serverTime
+            ? Math.max(0, Date.parse(reg.offerExpiresAt) - Date.parse(reg.serverTime) - (Date.now() - fetchedAt))
+            : null;
+          const countdown = remaining === null
+            ? ''
+            : `${Math.floor(remaining / 60000)}:${String(Math.floor((remaining % 60000) / 1000)).padStart(2, '0')}`;
+          const isBusy = busyId === reg._id;
 
           return (
-            <div
-              key={reg._id}
-              style={{
-                background: 'var(--bg-secondary)',
-                border: '1px solid var(--border-color)',
-                borderRadius: 'var(--radius-md)',
-                padding: '1.5rem',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                flexWrap: 'wrap',
-                gap: '1rem',
-              }}
-            >
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.4rem' }}>
-                  <span
-                    style={{
-                      background: badge.bg,
-                      color: badge.color,
-                      fontSize: '0.75rem',
-                      fontWeight: 600,
-                      padding: '0.2rem 0.6rem',
-                      borderRadius: 'var(--radius-sm)',
-                      textTransform: 'uppercase',
-                    }}
-                  >
-                    {badge.text}
-                  </span>
-
-                  {reg.status === 'WAITLISTED' && reg.position && (
-                    <span
-                      style={{
-                        background: 'rgba(245, 158, 11, 0.25)',
-                        color: '#fbbf24',
-                        fontSize: '0.75rem',
-                        fontWeight: 700,
-                        padding: '0.2rem 0.6rem',
-                        borderRadius: 'var(--radius-sm)',
-                      }}
-                    >
-                      Position #{reg.position}
-                    </span>
-                  )}
+            <section key={reg._id} style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', padding: '1.25rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
+                <div>
+                  <h3>
+                    <Link to={`/events/${event?._id || event}`} style={{ color: 'var(--text-primary)', textDecoration: 'none' }}>
+                      {event?.title || 'Event registration'}
+                    </Link>
+                  </h3>
+                  <p style={{ color: 'var(--text-secondary)' }}>
+                    {reg.status === 'WAITLISTED' && `Waitlisted · position #${reg.position ?? '?'}`}
+                    {reg.status === 'OFFERED' && `Offer available · expires in ${countdown}`}
+                    {reg.status === 'CONFIRMED' && 'Confirmed'}
+                    {!activeStatuses.includes(reg.status) && reg.status}
+                  </p>
                 </div>
-
-                <h3 style={{ fontSize: '1.15rem', fontWeight: 700 }}>
-                  <Link
-                    to={`/events/${ev?._id || ev}`}
-                    style={{ color: '#fff', textDecoration: 'none' }}
-                  >
-                    {ev?.title || 'Event Registration'}
-                  </Link>
-                </h3>
-
-                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
-                  {ev?.startsAt && (
-                    <span>🕒 {new Date(ev.startsAt).toLocaleDateString()} &bull; </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  {reg.status === 'OFFERED' && (
+                    <>
+                      <button disabled={isBusy || remaining === 0} onClick={() => handleAction(reg._id, 'claim')}>Claim</button>
+                      <button disabled={isBusy} onClick={() => handleAction(reg._id, 'decline')}>Decline</button>
+                    </>
                   )}
-                  <span>Seq #{reg.seq}</span>
-                  {reg.confirmedAt && (
-                    <span> &bull; Confirmed on {new Date(reg.confirmedAt).toLocaleDateString()}</span>
+                  {activeStatuses.includes(reg.status) && (
+                    <button disabled={isBusy} onClick={() => handleAction(reg._id, 'cancel')}>
+                      {reg.status === 'WAITLISTED' ? 'Cancel' : 'Cancel registration'}
+                    </button>
                   )}
                 </div>
               </div>
-
-              <div>
-                {reg.status === 'WAITLISTED' && (
-                  <button
-                    onClick={() => handleCancel(reg._id)}
-                    disabled={isCancelling}
-                    style={{
-                      background: 'rgba(239, 68, 68, 0.1)',
-                      border: '1px solid rgba(239, 68, 68, 0.25)',
-                      color: '#f87171',
-                      padding: '0.5rem 1rem',
-                      borderRadius: 'var(--radius-sm)',
-                      fontWeight: 600,
-                      cursor: isCancelling ? 'not-allowed' : 'pointer',
-                      opacity: isCancelling ? 0.6 : 1,
-                    }}
-                  >
-                    {isCancelling ? 'Cancelling...' : 'Cancel Registration'}
-                  </button>
-                )}
-              </div>
-            </div>
+            </section>
           );
         })}
       </div>

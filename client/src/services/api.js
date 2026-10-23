@@ -125,6 +125,22 @@ class ApiClient {
       method: 'POST',
     });
   }
+
+  claimOffer(registrationId) {
+    return this.request(`/registrations/${registrationId}/claim`, { method: 'POST' });
+  }
+
+  declineOffer(registrationId) {
+    return this.request(`/registrations/${registrationId}/decline`, { method: 'POST' });
+  }
+
+  getNotifications() {
+    return this.request('/notifications');
+  }
+
+  markNotificationRead(notificationId) {
+    return this.request(`/notifications/${notificationId}/read`, { method: 'POST' });
+  }
 }
 
 export const api = new ApiClient(BASE_URL);
