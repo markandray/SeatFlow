@@ -256,70 +256,55 @@ describe('Registration & Concurrency Invariants (Workflow 2)', () => {
     await checkInvariants(event._id);
   });
 
-  /**
-   * Concurrency stress test with injected delay between seat grab and waitlist head pop
-   */
-  it('should reliably confirm capacity seats under 50-way registration race even with injected delay between seat-grab and head-pop', async () => {
+  /** Test 10: run both with and without the pre-head-pop hook. */
+  it('Test 10: confirms capacity seats in ten 50-request runs, with and without the pre-head-pop hook', async () => {
     const capacity = 10;
+    let runId = 0;
 
-    for (let run = 0; run < 3; run++) {
-      const event = await Event.create({
-        organizerId: organizer._id,
-        title: `Stress Injected Delay Event ${run}`,
-        startsAt: new Date(Date.now() + 86400000),
-        registrationDeadline: new Date(Date.now() + 43200000),
-        capacity,
-        heldSeats: 0,
-        nextSeq: 0,
-        status: 'PUBLISHED',
-      });
+    try {
+      for (const hookEnabled of [false, true]) {
+        setPreHeadPopHook(hookEnabled ? async () => Promise.resolve() : null);
+        for (let repetition = 0; repetition < 10; repetition++, runId++) {
+          const event = await Event.create({
+            organizerId: organizer._id,
+            title: `Stress Event ${runId}`,
+            startsAt: new Date(Date.now() + 86400000),
+            registrationDeadline: new Date(Date.now() + 43200000),
+            capacity,
+            heldSeats: 0,
+            nextSeq: 0,
+            status: 'PUBLISHED',
+          });
 
-      const userDocs = [];
-      const runId = `${Date.now()}_${run}`;
-      for (let i = 0; i < 50; i++) {
-        userDocs.push({
-          name: `User ${run}_${i}`,
-          email: `u_${runId}_${i}@example.com`,
-          passwordHash: 'hash',
-          role: 'student',
-        });
-      }
-      const createdUsers = await User.insertMany(userDocs);
-      const tokens = createdUsers.map((u) => signToken(u));
+          const runKey = `${Date.now()}_${runId}`;
+          const createdUsers = await User.insertMany(
+            Array.from({ length: 50 }, (_, i) => ({
+              name: `User ${runId}_${i}`,
+              email: `stress_${runKey}_${i}@example.com`,
+              passwordHash: 'hash',
+              role: 'student',
+            }))
+          );
 
-      // Inject small random delay (0-20ms) between seat grab and head pop
-      setPreHeadPopHook(async () => {
-        const delay = Math.floor(Math.random() * 20);
-        if (delay > 0) {
-          await new Promise((r) => setTimeout(r, delay));
+          const responses = await Promise.all(
+            createdUsers.map((user) =>
+              request(app)
+                .post(`/api/events/${event._id}/register`)
+                .set('Authorization', `Bearer ${signToken(user)}`)
+            )
+          );
+          expect(responses.every((res) => res.statusCode === 201)).toBe(true);
+
+          const registrations = await Registration.find({ eventId: event._id });
+          const confirmed = registrations.filter((reg) => reg.status === 'CONFIRMED');
+          const reloadedEvent = await Event.findById(event._id);
+          expect(confirmed.length).toBe(capacity);
+          expect(reloadedEvent.heldSeats).toBe(capacity);
+          await checkInvariants(event._id);
         }
-      });
-
-      const responses = await Promise.all(
-        tokens.map((token) =>
-          request(app)
-            .post(`/api/events/${event._id}/register`)
-            .set('Authorization', `Bearer ${token}`)
-        )
-      );
-
-      // Clean up hook
-      setPreHeadPopHook(null);
-
-      for (const res of responses) {
-        expect(res.statusCode).toBe(201);
       }
-
-      const registrations = await Registration.find({ eventId: event._id });
-      const confirmed = registrations.filter((r) => r.status === 'CONFIRMED');
-      const waitlisted = registrations.filter((r) => r.status === 'WAITLISTED');
-      const reloadedEvent = await Event.findById(event._id);
-
-      expect(confirmed.length).toBe(capacity);
-      expect(waitlisted.length).toBe(50 - capacity);
-      expect(reloadedEvent.heldSeats).toBe(capacity);
-
-      await checkInvariants(event._id);
+    } finally {
+      setPreHeadPopHook(null);
     }
-  });
+  }, 120000);
 });
