@@ -6,6 +6,8 @@ const env = require('../src/config/env');
 const User = require('../src/models/User');
 const Event = require('../src/models/Event');
 const Registration = require('../src/models/Registration');
+const Notification = require('../src/models/Notification');
+const AuditLog = require('../src/models/AuditLog');
 
 const API_URL = process.env.API_URL || 'http://localhost:5001/api';
 const MONGO_URI = process.env.MONGO_URI || env.MONGO_URI;
@@ -23,6 +25,18 @@ const signToken = (user) => {
     { expiresIn: '1d' }
   );
 };
+
+async function postRegistration(eventId, token) {
+  const res = await fetch(`${API_URL}/events/${eventId}/register`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  const body = await res.json().catch(async () => ({ body: await res.text().catch(() => '') }));
+  return { status: res.status, body };
+}
 
 async function checkInvariants(eventId) {
   const event = await Event.findById(eventId);
@@ -73,14 +87,15 @@ async function runLoadTest() {
   log('====================================================');
   log(`Timestamp: ${new Date().toISOString()}`);
   log(`Target API URL: ${API_URL}`);
-  log(`Connecting to MongoDB...`);
-
-  await mongoose.connect(MONGO_URI);
-  log('Connected to MongoDB.\n');
-
   let allPassed = true;
+  const runTag = `${Date.now()}_${process.pid}`;
+  const eventIds = [];
+  const createdUserIds = [];
 
   try {
+    log('Connecting to MongoDB...');
+    await mongoose.connect(MONGO_URI);
+    log('Connected to MongoDB.\n');
     // ----------------------------------------------------
     // Scenario 1: 50 Parallel Registrations for Capacity 10
     // ----------------------------------------------------
@@ -90,14 +105,14 @@ async function runLoadTest() {
 
     const organizer = await User.create({
       name: 'LoadTest Organizer',
-      email: `lt_org_${Date.now()}@test.com`,
+      email: `loadtest_${runTag}_organizer@loadtest.local`,
       passwordHash: 'hash',
       role: 'organizer',
     });
 
     const event = await Event.create({
       organizerId: organizer._id,
-      title: `Load Test Event ${Date.now()}`,
+      title: `LOADTEST ${runTag} - 50 parallel registrations`,
       description: 'Concurrency stress testing',
       startsAt: new Date(Date.now() + 86400000),
       registrationDeadline: new Date(Date.now() + 43200000),
@@ -106,20 +121,23 @@ async function runLoadTest() {
       nextSeq: 0,
       status: 'PUBLISHED',
     });
+    eventIds.push(event._id);
+    createdUserIds.push(organizer._id);
     log(`Seeded Event: ${event._id} (Capacity: 10, HeldSeats: 0)`);
 
     // Insert 50 users directly in DB
     const usersData = [];
-    const runId = Date.now();
+    const runId = runTag;
     for (let i = 0; i < 50; i++) {
       usersData.push({
         name: `LoadUser_${i}`,
-        email: `loaduser_${runId}_${i}@test.com`,
+        email: `loaduser_${runId}_${i}@loadtest.local`,
         passwordHash: 'hash',
         role: 'student',
       });
     }
     const createdUsers = await User.insertMany(usersData);
+    createdUserIds.push(...createdUsers.map((user) => user._id));
     log(`Created 50 test users directly in DB.`);
 
     const tokens = createdUsers.map((u) => signToken(u));
@@ -127,19 +145,7 @@ async function runLoadTest() {
     log(`Firing 50 parallel POST ${API_URL}/events/${event._id}/register ...`);
     const startTime = Date.now();
 
-    const responses = await Promise.all(
-      tokens.map(async (token) => {
-        const res = await fetch(`${API_URL}/events/${event._id}/register`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-        });
-        const body = await res.json().catch(() => ({}));
-        return { status: res.status, body };
-      })
-    );
+    const responses = await Promise.all(tokens.map((token) => postRegistration(event._id, token)));
 
     const durationMs = Date.now() - startTime;
     log(`Completed 50 parallel requests in ${durationMs}ms.\n`);
@@ -148,6 +154,14 @@ async function runLoadTest() {
     const statusCodes = responses.map((r) => r.status);
     const successCount = statusCodes.filter((s) => s === 201).length;
     log(`HTTP Responses: ${successCount}/50 returned 201 Created.`);
+    const statusBreakdown = statusCodes.reduce((counts, status) => {
+      counts[status] = (counts[status] || 0) + 1;
+      return counts;
+    }, {});
+    log(`HTTP status breakdown: ${JSON.stringify(statusBreakdown)}`);
+    const firstFailure = responses.find((response) => response.status < 200 || response.status >= 300);
+    if (firstFailure) log(`First error body (${firstFailure.status}): ${JSON.stringify(firstFailure.body)}`);
+    if (successCount !== 50) allPassed = false;
 
     // DB Assertions
     const registrations = await Registration.find({ eventId: event._id });
@@ -191,15 +205,16 @@ async function runLoadTest() {
 
     const singleUser = await User.create({
       name: 'Single User DoubleClick',
-      email: `single_${runId}@test.com`,
+      email: `loadtest_${runId}_single@loadtest.local`,
       passwordHash: 'hash',
       role: 'student',
     });
+    createdUserIds.push(singleUser._id);
     const singleToken = signToken(singleUser);
 
     const event2 = await Event.create({
       organizerId: organizer._id,
-      title: `Single User Event ${Date.now()}`,
+      title: `LOADTEST ${runTag} - single-user duplicate check`,
       startsAt: new Date(Date.now() + 86400000),
       registrationDeadline: new Date(Date.now() + 43200000),
       capacity: 5,
@@ -207,22 +222,11 @@ async function runLoadTest() {
       nextSeq: 0,
       status: 'PUBLISHED',
     });
+    eventIds.push(event2._id);
 
     log(`Firing 20 parallel register requests for user ${singleUser._id}...`);
     const responses2 = await Promise.all(
-      Array(20)
-        .fill(null)
-        .map(async () => {
-          const res = await fetch(`${API_URL}/events/${event2._id}/register`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${singleToken}`,
-            },
-          });
-          const body = await res.json().catch(() => ({}));
-          return { status: res.status, body };
-        })
+      Array.from({ length: 20 }, () => postRegistration(event2._id, singleToken))
     );
 
     const s201 = responses2.filter((r) => r.status === 201).length;
@@ -234,6 +238,15 @@ async function runLoadTest() {
     });
 
     log(`HTTP Responses: ${s201} created (201), ${s409} conflicts (409)`);
+    const statusBreakdown2 = responses2.reduce((counts, response) => {
+      counts[response.status] = (counts[response.status] || 0) + 1;
+      return counts;
+    }, {});
+    log(`HTTP status breakdown: ${JSON.stringify(statusBreakdown2)}`);
+    const firstFailure2 = responses2.find((response) => response.status < 200 || response.status >= 300);
+    if (firstFailure2) {
+      log(`First error body (${firstFailure2.status}): ${JSON.stringify(firstFailure2.body)}`);
+    }
     log(`Registrations in DB for user: ${userRegistrations.length} (expected exactly 1)`);
 
     await checkInvariants(event2._id);
@@ -252,8 +265,28 @@ async function runLoadTest() {
     log(err.stack);
     allPassed = false;
   } finally {
-    await mongoose.disconnect();
-    log('Disconnected from MongoDB.');
+    if (mongoose.connection.readyState === 1) {
+      try {
+        const registrations = await Registration.find({
+          $or: [{ eventId: { $in: eventIds } }, { userId: { $in: createdUserIds } }],
+        }).select('_id');
+        const registrationIds = registrations.map((reg) => reg._id);
+        await Promise.all([
+          Notification.deleteMany({ $or: [{ eventId: { $in: eventIds } }, { userId: { $in: createdUserIds } }] }),
+          AuditLog.deleteMany({ $or: [{ eventId: { $in: eventIds } }, { registrationId: { $in: registrationIds } }] }),
+          Registration.deleteMany({ $or: [{ eventId: { $in: eventIds } }, { userId: { $in: createdUserIds } }] }),
+          Event.deleteMany({ _id: { $in: eventIds } }),
+          User.deleteMany({ _id: { $in: createdUserIds } }),
+        ]);
+        log(`Cleaned up ${eventIds.length} tagged events and ${createdUserIds.length} tagged users.`);
+      } catch (cleanupError) {
+        log(`ERROR during tagged cleanup: ${cleanupError.message}`);
+        allPassed = false;
+      }
+      await mongoose.disconnect();
+      log('Disconnected from MongoDB.');
+    }
+
   }
 
   log('====================================================');
