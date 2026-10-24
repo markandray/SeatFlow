@@ -7,6 +7,9 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "test": "jest --runInBand --detectOpenHandles --forceExit",
+    "seed": "node scripts/seed.js",
+    "cleanup": "node scripts/cleanup.js",
+    "reset-demo": "npm run cleanup -- --confirm && npm run seed",
     "loadtest": "node scripts/loadtest.js"
   },
   "dependencies": {
