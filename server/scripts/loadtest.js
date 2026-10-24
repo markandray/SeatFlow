@@ -267,18 +267,32 @@ async function runLoadTest() {
   } finally {
     if (mongoose.connection.readyState === 1) {
       try {
+        // Discover by the unique run tag as well as in-memory IDs, so partial
+        // inserts are still removed if a setup step failed before recording IDs.
+        const [taggedEvents, taggedUsers] = await Promise.all([
+          Event.find({ title: new RegExp(`^LOADTEST ${runTag}`) }).select('_id'),
+          User.find({ email: new RegExp(runTag) }).select('_id'),
+        ]);
+        const cleanupEventIds = [...new Set([
+          ...eventIds.map((eventId) => eventId.toString()),
+          ...taggedEvents.map((event) => event._id.toString()),
+        ])];
+        const cleanupUserIds = [...new Set([
+          ...createdUserIds.map((userId) => userId.toString()),
+          ...taggedUsers.map((user) => user._id.toString()),
+        ])];
         const registrations = await Registration.find({
-          $or: [{ eventId: { $in: eventIds } }, { userId: { $in: createdUserIds } }],
+          $or: [{ eventId: { $in: cleanupEventIds } }, { userId: { $in: cleanupUserIds } }],
         }).select('_id');
         const registrationIds = registrations.map((reg) => reg._id);
         await Promise.all([
-          Notification.deleteMany({ $or: [{ eventId: { $in: eventIds } }, { userId: { $in: createdUserIds } }] }),
-          AuditLog.deleteMany({ $or: [{ eventId: { $in: eventIds } }, { registrationId: { $in: registrationIds } }] }),
-          Registration.deleteMany({ $or: [{ eventId: { $in: eventIds } }, { userId: { $in: createdUserIds } }] }),
-          Event.deleteMany({ _id: { $in: eventIds } }),
-          User.deleteMany({ _id: { $in: createdUserIds } }),
+          Notification.deleteMany({ $or: [{ eventId: { $in: cleanupEventIds } }, { userId: { $in: cleanupUserIds } }] }),
+          AuditLog.deleteMany({ $or: [{ eventId: { $in: cleanupEventIds } }, { registrationId: { $in: registrationIds } }] }),
+          Registration.deleteMany({ $or: [{ eventId: { $in: cleanupEventIds } }, { userId: { $in: cleanupUserIds } }] }),
+          Event.deleteMany({ _id: { $in: cleanupEventIds } }),
+          User.deleteMany({ _id: { $in: cleanupUserIds } }),
         ]);
-        log(`Cleaned up ${eventIds.length} tagged events and ${createdUserIds.length} tagged users.`);
+        log(`Cleaned up ${cleanupEventIds.length} tagged events and ${cleanupUserIds.length} tagged users.`);
       } catch (cleanupError) {
         log(`ERROR during tagged cleanup: ${cleanupError.message}`);
         allPassed = false;
