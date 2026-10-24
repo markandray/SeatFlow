@@ -85,6 +85,22 @@ class ApiClient {
     return this.request(`/events${qs}`);
   }
 
+  getOrganizerEvents() {
+    return this.request('/events/mine');
+  }
+
+  getEventAttendees(eventId) {
+    return this.request(`/events/${eventId}/attendees`);
+  }
+
+  getEventAudit(eventId, page = 1, limit = 25) {
+    return this.request(`/events/${eventId}/audit?page=${page}&limit=${limit}`);
+  }
+
+  cancelEvent(eventId) {
+    return this.request(`/events/${eventId}/cancel`, { method: 'POST' });
+  }
+
   getEventById(id) {
     return this.request(`/events/${id}`);
   }
@@ -101,6 +117,14 @@ class ApiClient {
       method: 'PATCH',
       body: updateData,
     });
+  }
+
+  checkInRegistration(registrationId) {
+    return this.request(`/registrations/${registrationId}/check-in`, { method: 'POST' });
+  }
+
+  markNoShow(registrationId) {
+    return this.request(`/registrations/${registrationId}/no-show`, { method: 'POST' });
   }
 
   publishEvent(id) {

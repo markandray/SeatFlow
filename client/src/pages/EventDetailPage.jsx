@@ -80,6 +80,17 @@ export default function EventDetailPage() {
   }
 
   const { event, seatsLeft, waitlistCount, myRegistration } = eventData;
+  if (event.status === 'CANCELLED') {
+    return (
+      <div style={{ maxWidth: '720px', margin: '2rem auto', padding: '0 1.5rem' }}>
+        <Link to="/" style={{ color: 'var(--text-secondary)' }}>&larr; Back to all events</Link>
+        <h1 style={{ marginTop: '1rem' }}>{event.title}</h1>
+        <div role="status" style={{ marginTop: '1rem', padding: '1rem', borderRadius: 'var(--radius-md)', background: 'rgba(239, 68, 68, 0.1)', color: '#f87171' }}>
+          Event cancelled
+        </div>
+      </div>
+    );
+  }
   const now = new Date();
   const startsAt = new Date(event.startsAt);
   const deadline = new Date(event.registrationDeadline);

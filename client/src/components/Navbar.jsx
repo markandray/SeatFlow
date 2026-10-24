@@ -89,19 +89,12 @@ export default function Navbar() {
         )}
 
         {user && user.role === 'organizer' && (
-          <Link
-            to="/organizer/create"
-            style={{
-              background: 'var(--accent-primary)',
-              color: '#fff',
-              padding: '0.4rem 0.8rem',
-              borderRadius: 'var(--radius-sm)',
-              textDecoration: 'none',
-              fontWeight: 600,
-            }}
-          >
-            + Create Event
-          </Link>
+          <>
+            <Link to="/organizer" style={{ color: 'var(--text-secondary)', textDecoration: 'none' }}>Dashboard</Link>
+            <Link to="/organizer/create" style={{ background: 'var(--accent-primary)', color: '#fff', padding: '0.4rem 0.8rem', borderRadius: 'var(--radius-sm)', textDecoration: 'none', fontWeight: 600 }}>
+              + Create Event
+            </Link>
+          </>
         )}
 
         {user ? (
