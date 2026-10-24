@@ -7,10 +7,11 @@ import usePolling from '../hooks/usePolling';
 export default function Navbar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
-  const [notifications, setNotifications] = useState([]);
+  const [notifications, setNotifications] = useState(null);
   const [unreadCount, setUnreadCount] = useState(0);
   const [bellOpen, setBellOpen] = useState(false);
   const [notificationError, setNotificationError] = useState(null);
+  const [readBusyId, setReadBusyId] = useState(null);
 
   const loadNotifications = useCallback(async () => {
     if (user?.role !== 'student') return;
@@ -31,15 +32,21 @@ export default function Navbar() {
   };
 
   const markRead = async (notification) => {
-    if (!notification.readAt) await api.markNotificationRead(notification._id);
-    await loadNotifications();
+    setReadBusyId(notification._id);
+    try {
+      if (!notification.readAt) await api.markNotificationRead(notification._id);
+      await loadNotifications();
+    } catch (err) {
+      setNotificationError(err.message || 'Could not update this notification');
+    } finally {
+      setReadBusyId(null);
+    }
   };
 
   return (
     <header className="navbar">
       <Link to="/" className="brand">
         <span>⚡ SeatFlow</span>
-        <span className="brand-badge">Session 2</span>
       </Link>
 
       <nav style={{ display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
@@ -71,12 +78,14 @@ export default function Navbar() {
               <div style={{ position: 'absolute', right: 0, top: '2.8rem', zIndex: 20, width: 'min(360px, 85vw)', maxHeight: '70vh', overflowY: 'auto', padding: '1rem', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', boxShadow: '0 12px 30px rgba(0,0,0,.35)' }}>
                 <strong>Notifications</strong>
                 {notificationError && <p role="alert" style={{ color: '#f87171' }}>{notificationError}</p>}
-                {!notificationError && notifications.length === 0 && <p style={{ color: 'var(--text-secondary)' }}>No notifications yet.</p>}
-                {notifications.map((notification) => (
+                {!notificationError && notifications === null && <p role="status" style={{ color: 'var(--text-secondary)' }}>Loading notifications…</p>}
+                {!notificationError && notifications?.length === 0 && <p style={{ color: 'var(--text-secondary)' }}>No notifications yet.</p>}
+                {notifications?.map((notification) => (
                   <button
                     type="button"
                     key={notification._id}
                     onClick={() => markRead(notification)}
+                    disabled={readBusyId === notification._id}
                     style={{ display: 'block', width: '100%', textAlign: 'left', padding: '0.75rem 0', background: 'transparent', border: 0, borderBottom: '1px solid var(--border-color)', color: 'var(--text-primary)', cursor: 'pointer', opacity: notification.readAt ? 0.7 : 1 }}
                   >
                     <span>{notification.readAt ? '○ ' : '● '}{notification.message}</span>

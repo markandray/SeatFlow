@@ -77,7 +77,7 @@ export default function MyRegistrationsPage() {
           const countdown = remaining === null
             ? ''
             : `${Math.floor(remaining / 60000)}:${String(Math.floor((remaining % 60000) / 1000)).padStart(2, '0')}`;
-          const isBusy = busyId === reg._id;
+          const isBusy = Boolean(busyId);
 
           return (
             <section key={reg._id} style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', padding: '1.25rem' }}>

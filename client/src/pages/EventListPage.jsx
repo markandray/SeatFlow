@@ -33,9 +33,23 @@ export default function EventListPage() {
 
   return (
     <div style={{ maxWidth: '960px', margin: '2rem auto', padding: '0 1.5rem' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+      <section style={{ margin: '1.5rem 0 3rem', padding: '2.5rem', borderRadius: 'var(--radius-lg)', background: 'linear-gradient(135deg, var(--bg-secondary), rgba(99,102,241,.18))', border: '1px solid var(--border-color)' }}>
+        <p style={{ color: 'var(--accent-primary)', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>SeatFlow</p>
+        <h1 style={{ maxWidth: 680, fontSize: 'clamp(2rem, 5vw, 3.3rem)', lineHeight: 1.08, fontWeight: 850 }}>Campus events, with a fair way in.</h1>
+        <div style={{ margin: '1rem 0 1.5rem', color: 'var(--text-secondary)', lineHeight: 1.8 }}>
+          <p>Find workshops, talks, and campus events.</p>
+          <p>Join a first-in, first-out waitlist when seats fill.</p>
+          <p>Get a timed offer when a seat opens up.</p>
+        </div>
+        <div style={{ display: 'flex', gap: '.75rem', flexWrap: 'wrap' }}>
+          <Link to="/signup" style={{ padding: '.7rem 1rem', background: 'var(--accent-primary)', color: '#fff', borderRadius: 'var(--radius-sm)', textDecoration: 'none', fontWeight: 700 }}>Sign up</Link>
+          <a href="#events" style={{ padding: '.7rem 1rem', border: '1px solid var(--border-color)', color: 'var(--text-primary)', borderRadius: 'var(--radius-sm)', textDecoration: 'none', fontWeight: 700 }}>Browse events</a>
+        </div>
+      </section>
+
+      <div id="events" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
-          <h1 style={{ fontSize: '1.85rem', fontWeight: 800 }}>Campus Events</h1>
+          <h2 style={{ fontSize: '1.85rem', fontWeight: 800 }}>Browse events</h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem' }}>
             Fair waitlists with automatic seat cascades for workshops and fest events.
           </p>
@@ -58,6 +72,7 @@ export default function EventListPage() {
           />
           <button
             type="submit"
+            disabled={loading}
             style={{
               padding: '0.6rem 1rem',
               background: 'var(--accent-primary)',
@@ -111,7 +126,7 @@ export default function EventListPage() {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1.5rem' }}>
+      {!loading && !error && events.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1.5rem' }}>
         {events.map((ev) => (
           <Link
             key={ev._id}
@@ -163,7 +178,7 @@ export default function EventListPage() {
             </div>
           </Link>
         ))}
-      </div>
+      </div>}
     </div>
   );
 }

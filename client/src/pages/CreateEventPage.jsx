@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 
 export default function CreateEventPage() {
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
 
   const [title, setTitle] = useState('');
@@ -18,7 +18,21 @@ export default function CreateEventPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
-  if (user && user.role !== 'organizer') {
+  if (authLoading) {
+    return <div role="status" style={{ maxWidth: '600px', margin: '4rem auto', textAlign: 'center' }}>Checking your account…</div>;
+  }
+
+  if (!user) {
+    return (
+      <div style={{ maxWidth: '600px', margin: '4rem auto', padding: '0 1rem', textAlign: 'center' }}>
+        <h1>Sign in to create an event</h1>
+        <p style={{ color: 'var(--text-secondary)' }}>An organizer account is needed to publish campus events.</p>
+        <Link to="/login">Sign in</Link>
+      </div>
+    );
+  }
+
+  if (user.role !== 'organizer') {
     return (
       <div style={{ maxWidth: '600px', margin: '4rem auto', padding: '0 1rem', textAlign: 'center' }}>
         <h2>Organizer Access Required</h2>

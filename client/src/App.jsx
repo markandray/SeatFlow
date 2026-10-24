@@ -9,6 +9,7 @@ import SignupPage from './pages/SignupPage';
 import MyRegistrationsPage from './pages/MyRegistrationsPage';
 import CreateEventPage from './pages/CreateEventPage';
 import OrganizerDashboardPage from './pages/OrganizerDashboardPage';
+import NotFoundPage from './pages/NotFoundPage';
 
 export default function App() {
   return (
@@ -25,6 +26,7 @@ export default function App() {
               <Route path="/my-registrations" element={<MyRegistrationsPage />} />
               <Route path="/organizer/create" element={<CreateEventPage />} />
               <Route path="/organizer" element={<OrganizerDashboardPage />} />
+              <Route path="*" element={<NotFoundPage />} />
             </Routes>
           </main>
           <footer className="footer">
