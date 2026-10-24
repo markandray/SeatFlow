@@ -87,15 +87,15 @@ async function runSeed() {
       await Event.deleteMany({ _id: { $in: previousIds } });
     }
 
-    const nearlyFull = await createPublishedEvent(organizer._id, 'DEMO Nearly Full Workshop', 3, 7);
+    const nearlyFull = await createPublishedEvent(organizer._id, 'DEMO Nearly Full Workshop', 3, 30);
     await registrationService.register(nearlyFull._id, students[0]._id);
     await registrationService.register(nearlyFull._id, students[1]._id);
 
-    const full = await createPublishedEvent(organizer._id, 'DEMO Full Workshop With Waitlist', 2, 10);
+    const full = await createPublishedEvent(organizer._id, 'DEMO Full Workshop With Waitlist', 2, 35);
     for (const student of students) await registrationService.register(full._id, student._id);
 
-    const open = await createPublishedEvent(organizer._id, 'DEMO Open Campus Event', 50, 14);
-    const startsAt = new Date(Date.now() + 21 * 86400000);
+    const open = await createPublishedEvent(organizer._id, 'DEMO Open Campus Event', 50, 45);
+    const startsAt = new Date(Date.now() + 40 * 86400000);
     const draft = await eventService.createEvent(organizer._id, {
       title: 'DEMO Draft Planning Event',
       description: 'A draft demo event not visible in the public listing.',
