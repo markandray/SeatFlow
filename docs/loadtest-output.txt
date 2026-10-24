@@ -1,7 +1,7 @@
 ====================================================
             SeatFlow Concurrency Load Test          
 ====================================================
-Timestamp: 2026-10-21T14:15:58.047Z
+Timestamp: 2026-10-24T15:09:01.787Z
 Target API URL: https://seatflow-92rg.onrender.com/api
 Connecting to MongoDB...
 Connected to MongoDB.
@@ -9,12 +9,13 @@ Connected to MongoDB.
 ----------------------------------------------------
 Scenario 1: 50 parallel registrations for 10 seats
 ----------------------------------------------------
-Seeded Event: 6ad8c91ed0badfcd0f4944a1 (Capacity: 10, HeldSeats: 0)
+Seeded Event: 6adcca0e3653df85bb3e8ea2 (Capacity: 10, HeldSeats: 0)
 Created 50 test users directly in DB.
-Firing 50 parallel POST https://seatflow-92rg.onrender.com/api/events/6ad8c91ed0badfcd0f4944a1/register ...
-Completed 50 parallel requests in 36834ms.
+Firing 50 parallel POST https://seatflow-92rg.onrender.com/api/events/6adcca0e3653df85bb3e8ea2/register ...
+Completed 50 parallel requests in 41048ms.
 
 HTTP Responses: 50/50 returned 201 Created.
+HTTP status breakdown: {"201":50}
 Assertions:
 - Total registrations in DB: 50 (expected 50)
 - Confirmed count: 10 (expected 10)
@@ -27,12 +28,15 @@ Assertions:
 ----------------------------------------------------
 Scenario 2: 20 parallel requests from ONE user
 ----------------------------------------------------
-Firing 20 parallel register requests for user 6ad8c944d0badfcd0f4944e4...
+Firing 20 parallel register requests for user 6adcca383653df85bb3e8eea...
 HTTP Responses: 1 created (201), 19 conflicts (409)
+HTTP status breakdown: {"201":1,"409":19}
+First error body (409): {"error":{"code":"ALREADY_REGISTERED","message":"You already have an active registration for this event"}}
 Registrations in DB for user: 1 (expected exactly 1)
 - Invariants 1, 2, 3, 6 verified successfully.
 >>> Scenario 2: PASS
 
+Cleaned up 2 tagged events and 52 tagged users.
 Disconnected from MongoDB.
 ====================================================
 OVERALL RESULT: PASS
