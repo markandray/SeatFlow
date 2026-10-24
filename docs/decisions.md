@@ -46,7 +46,7 @@ When a seat is freed up, exactly one time-limited offer is extended to the head 
 ## 4. Expiry on Read + Background Sweeper
 
 ### Decision
-Stale offers (`status: 'OFFERED', offerExpiresAt < now`) are expired both when read endpoints are queried (`GET /api/events/:id`, `GET /api/registrations/mine`, organizer attendee lists) and periodically by a 15-second cron sweeper.
+Stale offers (`status: 'OFFERED', offerExpiresAt < now`) are expired both when read endpoints are queried (`GET /api/events/:id`, `GET /api/registrations/mine`, organizer attendee lists) and periodically by a 15-second cron sweeper. The sweeper calls the same `refreshEvent` function as the read paths, not its own allocation code.
 
 ### Rationale
 - Immediate responsiveness: A user refreshing their screen immediately sees an up-to-date queue and freed seats, without waiting for the next cron tick.
@@ -57,10 +57,12 @@ Stale offers (`status: 'OFFERED', offerExpiresAt < now`) are expired both when r
 ## 5. Reconciler Design and Double-Check Mechanism
 
 ### Decision
-A background job runs once per minute to reconcile `heldSeats` against `count(OFFERED + CONFIRMED + CHECKED_IN)`. The reconciler computes the actual count, pauses for 2 seconds, and computes it a second time. It only adjusts `heldSeats` if both counts agree with each other and disagree with the stored counter. The correction runs inside the per-event lock (decision 12) so it cannot interleave with `allocate`.
+A background job runs once per minute to reconcile `heldSeats` against `count(OFFERED + CONFIRMED + CHECKED_IN)`. The sequence is: count, wait about 2 seconds (outside the lock), count again. Only if both counts agree with each other and differ from the stored counter does it take the per-event lock, re-read the event, and apply the correction as a guarded update (`updateOne({ _id, heldSeats: observedValue }, { heldSeats: actual })`). If the counter changed in the meantime, the fix is skipped and retried on the next cycle. An audit entry (`RECONCILED`) is written only when the update modified a document.
 
 ### Rationale
-- Under heavy concurrent load, intermediate atomic state transitions (e.g. seat grab followed by waitlist assignment) could temporarily create a 1-seat transient gap. The double check ensures in-flight requests are not erroneously "corrected" into an invalid state. Every reconciliation writes a `RECONCILED` entry to `AuditLog`.
+- Under heavy concurrent load, intermediate atomic state transitions (e.g. seat grab followed by waitlist assignment) could temporarily create a 1-seat transient gap. The double check ensures in-flight requests are not erroneously "corrected" into an invalid state, and the guarded update catches anything that changed after the second count.
+- The recheck delay is a parameter (`recheckMs`) so tests call the reconciler directly with `recheckMs: 0` and never wait on the cron schedule. It is the one deliberate delay in the codebase; no request flow sleeps or retries.
+- The wait is never held inside the lock, so it cannot block registrations.
 
 ---
 
@@ -119,7 +121,7 @@ If a user cancels their registration or allows an offer to expire, re-registerin
 Authentication uses stateless JSON Web Tokens passed in standard `Authorization: Bearer <token>` headers. The token payload contains user ID and role, and requests verify user status and role against both the token and the database.
 
 ### Rationale
-- Standard, cross-origin compatible, and free of CSRF vulnerabilities inherent to cookie-based approaches across separate frontend/backend deployment domains (e.g. Vercel frontend + Render backend).
+- Standard, cross-origin compatible, and free of CSRF vulnerabilities inherent to cookie-based approaches across separate frontend/backend deployment domains (e.g. Vercel frontend + Render backend). Because no cookies are used, CORS is configured without credentials and limited to a single configured origin.
 
 ---
 
@@ -148,24 +150,57 @@ A request that registers while a seat is free should be confirmed instantly, not
 ## 12. Per-Event Allocation Lock (In-Process Keyed Mutex)
 
 ### Decision
-`allocate(eventId)` runs `allocateUnlocked(eventId)` inside an in-process keyed mutex (`utils/keyedMutex.js`). Allocations for one event run one at a time; different events run in parallel. The reconciler's correction uses the same lock.
+`allocate(eventId)` runs `allocateUnlocked(eventId)` inside an in-process keyed mutex (`utils/keyedMutex.js`). Allocations for one event run one at a time; different events run in parallel. The reconciler's correction and event cancellation use the same lock.
 
 ### Rationale
 - A registrant keeps `registering: true` until its own `allocate` has finished. Because allocations for one event are serialized, any allocation that could pop that registrant finishes before the flag is cleared, so a registrant is confirmed instantly whenever a seat was free for them.
 - **Safety does not depend on the lock.** It comes from the guarded atomic updates (the `heldSeats < capacity` seat grab and the status-guarded head pop). A dedicated test calls `allocateUnlocked` concurrently and asserts the safety invariants still hold. The lock only provides the instant-confirm behavior.
-- **Verification:** with the lock, 10 consecutive local load-test runs gave exactly 10 confirmed and 40 waitlisted each time; the deployed API gave the same result.
+- **Verification:** with the lock, repeated local load runs (a 30-run soak, plus several batches of 10) gave exactly 10 confirmed and 40 waitlisted each time, and the deployed API gave the same result. One isolated failure seen once, right after a full Jest run on the same machine, did not reproduce in the 40+ runs that followed; it is believed to be local resource contention but was not conclusively explained.
 
 ### Trade-offs and assumptions
 - **Single process:** the lock only serializes within one Node process. The deployment runs one API instance (Render free tier, `WEB_CONCURRENCY=1`). With several instances, a registrant could occasionally receive an offer instead of an instant confirmation; nothing would ever be over-booked.
-- **Throughput on one hot event:** registrations for the same event are processed in order. Measured on the deployed free-tier stack: 50 simultaneous registrations took about 37 s warm and about 63 s with a cold start (dominated by database round trips from the free-tier API to Atlas). Realistic campus traffic is far below a 50-request burst, and different events do not block each other.
+- **Throughput on one hot event:** registrations for the same event are processed in order. Measured on the deployed free-tier stack: 50 simultaneous registrations took about 41 s warm (37 s in an earlier run) and about 63 s with a cold start, dominated by database round trips from the free-tier API to Atlas. Realistic campus traffic is far below a 50-request burst, and different events do not block each other.
 - **Possible later improvement:** reduce round trips inside the locked section (batch audit/notification writes, skip the stale-offer scan when not needed). Not done, because correctness took priority.
 
 ---
 
-## 13. Known Limitations
+## 13. Event Cancellation Under the Lock (Mutex Is Not Re-entrant)
+
+### Decision
+Cancelling an event runs its whole sequence (guarded status change to `CANCELLED`, moving active registrations to `CANCELLED`, setting `heldSeats = 0`, inserting `EVENT_CANCELLED` notifications, one audit entry) inside `withLock(String(eventId), ...)`.
+
+### Rationale
+- An in-flight allocation could otherwise grab a seat or promote a waitlisted registration after the cancellation started and leave a held seat on a cancelled event. A test cancels while an allocation is in flight and checks the invariants afterwards.
+- The keyed mutex is not re-entrant, so nothing inside a `withLock` callback may call `allocate()`, `refreshEvent()`, or anything else that takes the same event's lock; doing so would deadlock the request. The cancellation code therefore uses direct guarded updates only.
+
+---
+
+## 14. Events Are Cancelled, Never Deleted
+
+### Decision
+There is no delete endpoint. Organizers cancel events, and cancelled events remain readable by id (students see "Event cancelled") but disappear from the public list. Draft and cancelled events never appear in the public listing; organizers see all their own events through `GET /api/events/mine`.
+
+### Rationale
+- Deleting an event would orphan registrations, notifications, and the audit log. Cancelling keeps the history intact and gives attendees a clear message and a notification.
+
+---
+
+## 15. Demo Data and Cleanup Tooling
+
+### Decision
+`npm run seed` is idempotent and creates the demo organizer, five demo students, and four `DEMO ` events (nearly full, full with a waitlist, open, draft) through the service layer, so the data satisfies the same invariants as live data. `npm run cleanup` is a dry run by default that prints the database name, host (without credentials), and counts; `--confirm` requires typing the database name before anything is deleted. `npm run reset-demo` runs the confirmed cleanup then the seed. The load test tags its own data (`LOADTEST` events, `@loadtest.local` users) and removes it in a `finally` block, so a failed run does not leave junk in a shared database.
+
+### Rationale
+- The same database serves local development and the live demo, so destructive scripts need explicit, hard-to-trigger confirmation. Seeding through the service layer avoids hand-built data that could silently violate invariants.
+
+---
+
+## 16. Known Limitations
 
 - Single API instance assumption (decision 12).
 - Allocation is serialized per event; a single very hot event handles registrations in order.
-- Free-tier cold starts (Render sleeps after inactivity; the first request can take about 50 seconds).
+- Free-tier cold starts (Render sleeps after inactivity; the first request can take about a minute).
 - Polling (5 to 10 seconds) instead of push updates, so countdowns and positions can be a few seconds stale.
 - The background sweeper does not run while the free-tier service sleeps; correctness does not depend on it (decision 3).
+- Notifications are in-app only.
+- `npm audit` reports advisories in some dependencies (zod, node-cron/uuid on the server; react-router on the client) whose fixes require major upgrades; not applied.

@@ -43,7 +43,7 @@ server/
                    eventService.js, notificationService.js, auditService.js
     jobs/          sweeper.js (cron)
     utils/         ApiError.js, asyncHandler.js, keyedMutex.js
-  scripts/         seed.js, loadtest.js
+    scripts/         seed.js, cleanup.js, loadtest.js
   tests/
 client/
   src/ pages/, components/, context/, hooks/ (usePolling), services/api.js
@@ -236,13 +236,14 @@ await allocate(eventId); // a capacity increase must hand the new seats to the w
 
 ### 6.8 Reconciler (guards against counter drift)
 
-A crash between a `heldSeats` change and the registration update could leave the counter wrong. Once a minute, for each published event: compute `actual = count(OFFERED + CONFIRMED + CHECKED_IN)`, wait about 2 seconds, compute again. Only if both counts agree with each other and differ from `heldSeats`, set `heldSeats = actual` (inside `withLock(String(eventId), ...)` so it cannot interleave with `allocate`) and write an audit entry (`RECONCILED`). The double check avoids "fixing" a transient mismatch caused by an in-flight request.
+A crash between a `heldSeats` change and the registration update could leave the counter wrong. Once a minute, for each published event: compute `actual = count(OFFERED + CONFIRMED + CHECKED_IN)`, wait about 2 seconds (outside the lock; make the delay an injectable `recheckMs` parameter so tests pass 0), compute again. Only if both counts agree with each other and differ from `heldSeats`, enter `withLock(String(eventId), ...)`, re-read the event, and apply a guarded update `updateOne({ _id, heldSeats: observedValue }, { heldSeats: actual })`; if it modifies nothing, skip and retry next cycle. Write a `RECONCILED` audit entry only when the update modified a document.
 
 ### 6.9 Cancelling an event
 
 1. Guarded update: `Event {_id, organizerId, status in [DRAFT, PUBLISHED]} -> CANCELLED` (after this, `allocate` refuses to create offers).
 2. `updateMany` all active registrations to `CANCELLED`, set `heldSeats = 0`.
 3. `insertMany` an `EVENT_CANCELLED` notification for each affected user, and one audit entry.
+The whole sequence runs inside `withLock(String(eventId), ...)`. The mutex is NOT re-entrant: nothing inside a `withLock` callback may call `allocate()` or `refreshEvent()` for the same event (deadlock). Use direct guarded updates only.
 
 ## 7. The five workflows
 
@@ -322,7 +323,7 @@ Unit and API tests (Jest + supertest + mongodb-memory-server) must cover:
 - Asserts: confirmed count == 10, waitlisted count == 40, `heldSeats == 10`, no duplicate `seq`, invariants hold.
 - Second scenario: 20 parallel requests from ONE user, so exactly one registration exists.
 - Prints a clear PASS/FAIL summary, exits non-zero on failure, and saves output to `docs/loadtest-output.txt`.
-- Measured (deployed, free tier): 50 registrations in about 37 s warm and about 63 s cold start. Record the numbers and the trade-off in the README.
+- Measured (deployed, free tier): 50 registrations in about 41 s warm (37 s in an earlier run) and about 63 s cold start. Record the numbers and the trade-off in the README.
 
 ## 12. Deployment
 
@@ -330,7 +331,7 @@ Unit and API tests (Jest + supertest + mongodb-memory-server) must cover:
 - Env vars (server): `MONGO_URI, JWT_SECRET, CLIENT_ORIGIN, OFFER_MINUTES, PORT, ORGANIZER_INVITE_CODE` (optional). Client: `VITE_API_URL` (must end with `/api`). Keep `.env.example` files for both.
 - Render's free tier sleeps. Mention the cold start in the README and hit `/api/health` before any demo. Correctness does not depend on the sweeper (see section 6).
 - After pushing, wait until Render shows the new commit as Live before running anything against the deployed API.
-- `scripts/seed.js` creates one demo organizer, several demo students, and one nearly-full published event. Demo credentials go in the README.
+- `scripts/seed.js` (`npm run seed`) creates the demo organizer, five demo students and four `DEMO ` events (nearly full, full with a waitlist, open, draft). `scripts/cleanup.js` (`npm run cleanup`) is a dry run; `--confirm` requires typing the database name. `npm run reset-demo` does both. Demo credentials go in the README.
 
 ## 13. Build sessions (one at a time)
 
