@@ -262,6 +262,7 @@ A crash between a `heldSeats` change and the registration update could leave the
 GET    /api/health
 POST   /api/auth/register | /api/auth/login        GET /api/auth/me
 GET    /api/events                      (public; search, filter by status/date)
+GET    /api/events/mine                 (organizer; own events in any status, counts and seats left)
 GET    /api/events/:id                  (public, auth optional; returns event, seatsLeft,
                                          waitlistCount, myRegistration + position if logged in, serverTime)
 POST   /api/events                                  (organizer)
@@ -271,8 +272,9 @@ POST   /api/events/:id/register                     (student)
 GET    /api/registrations/mine                      (student; each item includes position, offerExpiresAt, serverTime)
 POST   /api/registrations/:id/claim | /decline | /cancel   (student, owner of the registration)
 GET    /api/events/:id/attendees                    (organizer, owner only)
+POST   /api/events/:id/cancel                       (organizer, owner only)
 POST   /api/registrations/:id/check-in | /no-show   (organizer who owns the event)
-GET    /api/events/:id/audit                        (organizer, owner only)
+GET    /api/events/:id/audit                        (organizer, owner only; paginated)
 GET    /api/notifications     POST /api/notifications/:id/read
 ```
 
