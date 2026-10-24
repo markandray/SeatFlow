@@ -536,4 +536,174 @@ describe('Registration & Concurrency Invariants (Workflow 2)', () => {
     expect((await Event.findById(transientEvent._id)).heldSeats).toBe(0);
     expect(await AuditLog.countDocuments({ eventId: transientEvent._id, action: 'RECONCILED' })).toBe(0);
   });
+
+  it('Part A: declining an offer gives the seat to the next waitlisted person', async () => {
+    const event = await Event.create({
+      organizerId: organizer._id,
+      title: 'Decline Cascade',
+      startsAt: new Date(Date.now() + 86400000),
+      registrationDeadline: new Date(Date.now() + 43200000),
+      capacity: 1,
+      heldSeats: 1,
+      status: 'PUBLISHED',
+    });
+    const users = await User.insertMany([
+      { name: 'Offer Holder', email: 'decline_holder@example.com', passwordHash: 'hash', role: 'student' },
+      { name: 'Next in Line', email: 'decline_next@example.com', passwordHash: 'hash', role: 'student' },
+    ]);
+    const offer = await Registration.create({
+      eventId: event._id,
+      userId: users[0]._id,
+      status: 'OFFERED',
+      seq: 1,
+      offeredAt: new Date(),
+      offerExpiresAt: new Date(Date.now() + 60000),
+    });
+    const waiting = await Registration.create({
+      eventId: event._id,
+      userId: users[1]._id,
+      status: 'WAITLISTED',
+      seq: 2,
+      registering: false,
+    });
+
+    const response = await request(app)
+      .post(`/api/registrations/${offer._id}/decline`)
+      .set('Authorization', `Bearer ${signToken(users[0])}`);
+    expect(response.statusCode).toBe(200);
+    expect((await Registration.findById(offer._id)).status).toBe('CANCELLED');
+    expect((await Registration.findById(waiting._id)).status).toBe('OFFERED');
+    expect((await Event.findById(event._id)).heldSeats).toBe(1);
+    await checkInvariants(event._id);
+  });
+
+  it('Part A: a second claim returns 410 after the first claim wins', async () => {
+    const event = await Event.create({
+      organizerId: organizer._id,
+      title: 'Double Claim',
+      startsAt: new Date(Date.now() + 86400000),
+      registrationDeadline: new Date(Date.now() + 43200000),
+      capacity: 1,
+      heldSeats: 1,
+      status: 'PUBLISHED',
+    });
+    const user = await User.create({ name: 'Claim Student', email: 'double_claim@example.com', passwordHash: 'hash', role: 'student' });
+    const offer = await Registration.create({
+      eventId: event._id,
+      userId: user._id,
+      status: 'OFFERED',
+      seq: 1,
+      offeredAt: new Date(),
+      offerExpiresAt: new Date(Date.now() + 60000),
+    });
+    const token = signToken(user);
+
+    const first = await request(app).post(`/api/registrations/${offer._id}/claim`).set('Authorization', `Bearer ${token}`);
+    const second = await request(app).post(`/api/registrations/${offer._id}/claim`).set('Authorization', `Bearer ${token}`);
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(410);
+    expect((await Registration.findById(offer._id)).status).toBe('CONFIRMED');
+    expect((await Event.findById(event._id)).heldSeats).toBe(1);
+    await checkInvariants(event._id);
+  });
+
+  it('Part A: another user cannot claim an offer and state is unchanged', async () => {
+    const event = await Event.create({
+      organizerId: organizer._id,
+      title: 'Foreign Claim',
+      startsAt: new Date(Date.now() + 86400000),
+      registrationDeadline: new Date(Date.now() + 43200000),
+      capacity: 1,
+      heldSeats: 1,
+      status: 'PUBLISHED',
+    });
+    const users = await User.insertMany([
+      { name: 'Owner', email: 'foreign_owner@example.com', passwordHash: 'hash', role: 'student' },
+      { name: 'Other', email: 'foreign_other@example.com', passwordHash: 'hash', role: 'student' },
+    ]);
+    const offer = await Registration.create({
+      eventId: event._id,
+      userId: users[0]._id,
+      status: 'OFFERED',
+      seq: 1,
+      offeredAt: new Date(),
+      offerExpiresAt: new Date(Date.now() + 60000),
+    });
+
+    const response = await request(app)
+      .post(`/api/registrations/${offer._id}/claim`)
+      .set('Authorization', `Bearer ${signToken(users[1])}`);
+    expect([403, 410]).toContain(response.statusCode);
+    expect((await Registration.findById(offer._id)).status).toBe('OFFERED');
+    expect((await Event.findById(event._id)).heldSeats).toBe(1);
+    await checkInvariants(event._id);
+  });
+
+  it('Part A: an expired offer cannot be claimed', async () => {
+    const event = await Event.create({
+      organizerId: organizer._id,
+      title: 'Expired Claim',
+      startsAt: new Date(Date.now() + 86400000),
+      registrationDeadline: new Date(Date.now() + 43200000),
+      capacity: 1,
+      heldSeats: 1,
+      status: 'PUBLISHED',
+    });
+    const user = await User.create({ name: 'Expired Student', email: 'expired_claim@example.com', passwordHash: 'hash', role: 'student' });
+    const offer = await Registration.create({
+      eventId: event._id,
+      userId: user._id,
+      status: 'OFFERED',
+      seq: 1,
+      offeredAt: new Date(Date.now() - 60000),
+      offerExpiresAt: new Date(Date.now() - 1),
+    });
+
+    const response = await request(app)
+      .post(`/api/registrations/${offer._id}/claim`)
+      .set('Authorization', `Bearer ${signToken(user)}`);
+    expect(response.statusCode).toBe(410);
+    expect((await Registration.findById(offer._id)).status).toBe('OFFERED');
+    expect((await Event.findById(event._id)).heldSeats).toBe(1);
+    await checkInvariants(event._id);
+  });
+
+  it('Part A: cancelling a confirmed registration offers its seat to the waitlist head', async () => {
+    const event = await Event.create({
+      organizerId: organizer._id,
+      title: 'Confirmed Cancellation',
+      startsAt: new Date(Date.now() + 86400000),
+      registrationDeadline: new Date(Date.now() + 43200000),
+      capacity: 1,
+      heldSeats: 1,
+      status: 'PUBLISHED',
+    });
+    const users = await User.insertMany([
+      { name: 'Confirmed', email: 'confirmed_cancel@example.com', passwordHash: 'hash', role: 'student' },
+      { name: 'Waitlisted', email: 'confirmed_cancel_wait@example.com', passwordHash: 'hash', role: 'student' },
+    ]);
+    const confirmed = await Registration.create({
+      eventId: event._id,
+      userId: users[0]._id,
+      status: 'CONFIRMED',
+      seq: 1,
+      confirmedAt: new Date(),
+    });
+    const waiting = await Registration.create({
+      eventId: event._id,
+      userId: users[1]._id,
+      status: 'WAITLISTED',
+      seq: 2,
+      registering: false,
+    });
+
+    const response = await request(app)
+      .post(`/api/registrations/${confirmed._id}/cancel`)
+      .set('Authorization', `Bearer ${signToken(users[0])}`);
+    expect(response.statusCode).toBe(200);
+    expect((await Registration.findById(confirmed._id)).status).toBe('CANCELLED');
+    expect((await Registration.findById(waiting._id)).status).toBe('OFFERED');
+    expect((await Event.findById(event._id)).heldSeats).toBe(1);
+    await checkInvariants(event._id);
+  });
 });
