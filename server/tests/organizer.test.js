@@ -190,6 +190,48 @@ describe('Organizer tools and Session 4 invariants', () => {
     await checkInvariants(event._id);
   });
 
+    it('no-show sent three times in parallel decrements heldSeats exactly once', async () => {
+    const event = await makeEvent({ startsAt: new Date(Date.now() + 86400000), heldSeats: 1 });
+    const confirmed = await Registration.create({
+      eventId: event._id, userId: student._id, status: 'CONFIRMED', seq: 1, confirmedAt: new Date(),
+    });
+    await Event.updateOne({ _id: event._id }, { startsAt: new Date(Date.now() - 1) });
+
+    const results = await Promise.all(
+      [1, 2, 3].map(() =>
+        request(app)
+          .post(`/api/registrations/${confirmed._id}/no-show`)
+          .set('Authorization', `Bearer ${organizerToken}`)
+      )
+    );
+
+    expect(results.map((r) => r.statusCode).sort()).toEqual([200, 409, 409]);
+    expect((await Registration.findById(confirmed._id)).status).toBe('NO_SHOW');
+    expect((await Event.findById(event._id)).heldSeats).toBe(0);
+    expect(await AuditLog.countDocuments({ eventId: event._id, action: 'REGISTRATION_NO_SHOW' })).toBe(1);
+    await checkInvariants(event._id);
+  });
+
+  it('check-in sent three times in parallel succeeds once and leaves heldSeats unchanged', async () => {
+    const event = await makeEvent({ heldSeats: 1 });
+    const confirmed = await Registration.create({
+      eventId: event._id, userId: student._id, status: 'CONFIRMED', seq: 1, confirmedAt: new Date(),
+    });
+
+    const results = await Promise.all(
+      [1, 2, 3].map(() =>
+        request(app)
+          .post(`/api/registrations/${confirmed._id}/check-in`)
+          .set('Authorization', `Bearer ${organizerToken}`)
+      )
+    );
+
+    expect(results.map((r) => r.statusCode).sort()).toEqual([200, 409, 409]);
+    expect((await Registration.findById(confirmed._id)).status).toBe('CHECKED_IN');
+    expect((await Event.findById(event._id)).heldSeats).toBe(1);
+    await checkInvariants(event._id);
+  });
+
   it('Test 8: event cancellation clears active registrations, seats, sends notifications, and blocks allocation', async () => {
     const event = await makeEvent({ capacity: 4, heldSeats: 3 });
     const users = await User.insertMany(
