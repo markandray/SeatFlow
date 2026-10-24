@@ -47,7 +47,7 @@ async function expireStaleOffers(eventId) {
 }
 
 async function refreshEvent(eventId) {
-  const expired = await expireStaleOffers(eventId);
+  const expired = await withLock(String(eventId), () => expireStaleOffers(eventId));
   if (expired > 0) await allocate(eventId);
   return expired;
 }
@@ -297,81 +297,192 @@ async function register(eventId, userId) {
 
 /** Guarded student cancellation and offer decline transitions. */
 async function cancelRegistration(registrationId, userId, { offeredOnly = false } = {}) {
-  const now = new Date();
-  const reg = await Registration.findOneAndUpdate(
-    {
-      _id: registrationId,
-      userId,
-      status: { $in: offeredOnly ? ['OFFERED'] : ['WAITLISTED', 'OFFERED', 'CONFIRMED'] },
-    },
-    { $set: { status: 'CANCELLED', cancelledAt: now } },
-    { new: true }
-  );
+  const existing = await Registration.findById(registrationId);
+  if (!existing) throw new ApiError(404, 'NOT_FOUND', 'Registration not found');
+  if (existing.userId.toString() !== userId.toString()) {
+    throw new ApiError(403, 'FORBIDDEN', 'You do not own this registration');
+  }
 
-  if (!reg) {
-    const existing = await Registration.findById(registrationId);
-    if (!existing) {
-      throw new ApiError(404, 'NOT_FOUND', 'Registration not found');
-    }
-    if (existing.userId.toString() !== userId.toString()) {
-      throw new ApiError(403, 'FORBIDDEN', 'You do not own this registration');
-    }
-    throw new ApiError(
-      409,
-      'INVALID_STATUS',
-      `Cannot cancel registration in status '${existing.status}' with this action`
+  const result = await withLock(String(existing.eventId), async () => {
+    const now = new Date();
+    const reg = await Registration.findOneAndUpdate(
+      {
+        _id: registrationId,
+        userId,
+        status: { $in: offeredOnly ? ['OFFERED'] : ['WAITLISTED', 'OFFERED', 'CONFIRMED'] },
+      },
+      { $set: { status: 'CANCELLED', cancelledAt: now } },
+      { new: true }
     );
-  }
 
-  // Only held states have either offeredAt or confirmedAt; WAITLISTED cancel frees no seat.
-  const seatWasHeld = Boolean(reg.offeredAt || reg.confirmedAt);
-  if (seatWasHeld) {
-    await Event.updateOne({ _id: reg.eventId }, { $inc: { heldSeats: -1 } });
-  }
+    if (!reg) {
+      const current = await Registration.findById(registrationId);
+      if (!current) throw new ApiError(404, 'NOT_FOUND', 'Registration not found');
+      throw new ApiError(
+        409,
+        'INVALID_STATUS',
+        `Cannot cancel registration in status '${current.status}' with this action`
+      );
+    }
 
-  await AuditLog.create({
-    eventId: reg.eventId,
-    actorId: userId,
-    action: offeredOnly ? 'OFFER_DECLINED' : 'REGISTRATION_CANCELLED',
-    registrationId: reg._id,
-    payload: { cancelledAt: reg.cancelledAt, status: reg.status },
+    // Only held states have either offeredAt or confirmedAt; WAITLISTED cancel frees no seat.
+    const seatWasHeld = Boolean(reg.offeredAt || reg.confirmedAt);
+    if (seatWasHeld) await Event.updateOne({ _id: reg.eventId }, { $inc: { heldSeats: -1 } });
+    await AuditLog.create({
+      eventId: reg.eventId,
+      actorId: userId,
+      action: offeredOnly ? 'OFFER_DECLINED' : 'REGISTRATION_CANCELLED',
+      registrationId: reg._id,
+      payload: { cancelledAt: reg.cancelledAt, status: reg.status },
+    });
+    return { reg, seatWasHeld };
   });
 
-  if (seatWasHeld) await allocate(reg.eventId);
-
-  return reg;
+  if (result.seatWasHeld) await allocate(existing.eventId);
+  return result.reg;
 }
 
 async function claimOffer(registrationId, userId) {
-  const now = new Date();
-  const reg = await Registration.findOneAndUpdate(
-    { _id: registrationId, userId, status: 'OFFERED', offerExpiresAt: { $gt: now } },
-    { $set: { status: 'CONFIRMED', confirmedAt: now, offerExpiresAt: null } },
-    { new: true }
-  );
-  if (!reg) {
-    const existing = await Registration.findById(registrationId);
-    if (!existing) throw new ApiError(404, 'NOT_FOUND', 'Registration not found');
-    if (existing.userId.toString() !== userId.toString()) {
-      throw new ApiError(403, 'FORBIDDEN', 'You do not own this registration');
-    }
-    throw new ApiError(410, 'OFFER_GONE', 'This offer expired or is no longer available');
+  const existing = await Registration.findById(registrationId);
+  if (!existing) throw new ApiError(404, 'NOT_FOUND', 'Registration not found');
+  if (existing.userId.toString() !== userId.toString()) {
+    throw new ApiError(403, 'FORBIDDEN', 'You do not own this registration');
   }
 
-  await AuditLog.create({
-    eventId: reg.eventId,
-    actorId: userId,
-    action: 'OFFER_CLAIMED',
-    registrationId: reg._id,
-    payload: { confirmedAt: reg.confirmedAt },
+  return withLock(String(existing.eventId), async () => {
+    const now = new Date();
+    const reg = await Registration.findOneAndUpdate(
+      { _id: registrationId, userId, status: 'OFFERED', offerExpiresAt: { $gt: now } },
+      { $set: { status: 'CONFIRMED', confirmedAt: now, offerExpiresAt: null } },
+      { new: true }
+    );
+    if (!reg) throw new ApiError(410, 'OFFER_GONE', 'This offer expired or is no longer available');
+
+    await AuditLog.create({
+      eventId: reg.eventId,
+      actorId: userId,
+      action: 'OFFER_CLAIMED',
+      registrationId: reg._id,
+      payload: { confirmedAt: reg.confirmedAt },
+    });
+    await Notification.create({
+      userId,
+      eventId: reg.eventId,
+      type: 'CONFIRMED',
+      message: 'Your registration is confirmed!',
+    });
+    return reg;
   });
-  await Notification.create({
-    userId,
-    eventId: reg.eventId,
-    type: 'CONFIRMED',
-    message: 'Your registration is confirmed!',
+}
+
+async function checkInRegistration(registrationId, organizerId) {
+  const registration = await Registration.findById(registrationId);
+  if (!registration) throw new ApiError(404, 'NOT_FOUND', 'Registration not found');
+
+  return withLock(String(registration.eventId), async () => {
+    const event = await Event.findById(registration.eventId);
+    if (!event) throw new ApiError(404, 'NOT_FOUND', 'Event not found');
+    if (event.organizerId.toString() !== organizerId.toString()) {
+      throw new ApiError(403, 'FORBIDDEN', 'You do not own this event');
+    }
+    if (event.status === 'CANCELLED') {
+      throw new ApiError(409, 'EVENT_CANCELLED', 'Cannot check in attendees for a cancelled event');
+    }
+
+    const reg = await Registration.findOneAndUpdate(
+      { _id: registrationId, eventId: event._id, status: 'CONFIRMED' },
+      { $set: { status: 'CHECKED_IN', checkedInAt: new Date() } },
+      { new: true }
+    );
+    if (!reg) throw new ApiError(409, 'INVALID_STATUS', 'Only confirmed registrations can be checked in');
+    await AuditLog.create({
+      eventId: event._id,
+      actorId: organizerId,
+      action: 'REGISTRATION_CHECKED_IN',
+      registrationId: reg._id,
+      payload: { checkedInAt: reg.checkedInAt },
+    });
+    return reg;
   });
-  return reg;
+}
+
+async function markNoShow(registrationId, organizerId) {
+  const registration = await Registration.findById(registrationId);
+  if (!registration) throw new ApiError(404, 'NOT_FOUND', 'Registration not found');
+
+  return withLock(String(registration.eventId), async () => {
+    const event = await Event.findById(registration.eventId);
+    if (!event) throw new ApiError(404, 'NOT_FOUND', 'Event not found');
+    if (event.organizerId.toString() !== organizerId.toString()) {
+      throw new ApiError(403, 'FORBIDDEN', 'You do not own this event');
+    }
+    if (event.status === 'CANCELLED') {
+      throw new ApiError(409, 'EVENT_CANCELLED', 'Cannot mark attendees for a cancelled event');
+    }
+    if (event.startsAt > new Date()) {
+      throw new ApiError(409, 'NOT_STARTED', 'No-shows can only be marked after the event starts');
+    }
+
+    const reg = await Registration.findOneAndUpdate(
+      { _id: registrationId, eventId: event._id, status: 'CONFIRMED' },
+      { $set: { status: 'NO_SHOW' } },
+      { new: true }
+    );
+    if (!reg) throw new ApiError(409, 'INVALID_STATUS', 'Only confirmed registrations can be marked no-show');
+    await Event.updateOne({ _id: event._id }, { $inc: { heldSeats: -1 } });
+    await AuditLog.create({
+      eventId: event._id,
+      actorId: organizerId,
+      action: 'REGISTRATION_NO_SHOW',
+      registrationId: reg._id,
+      payload: { noShowAt: new Date() },
+    });
+    return reg;
+  });
+}
+
+async function cancelEvent(eventId, organizerId) {
+  return withLock(String(eventId), async () => {
+    const event = await Event.findOneAndUpdate(
+      { _id: eventId, organizerId, status: { $in: ['DRAFT', 'PUBLISHED'] } },
+      { $set: { status: 'CANCELLED' } },
+      { new: true }
+    );
+    if (!event) {
+      const existing = await Event.findById(eventId);
+      if (!existing) throw new ApiError(404, 'NOT_FOUND', 'Event not found');
+      if (existing.organizerId.toString() !== organizerId.toString()) {
+        throw new ApiError(403, 'FORBIDDEN', 'You do not own this event');
+      }
+      throw new ApiError(409, 'INVALID_STATUS', `Cannot cancel event in status '${existing.status}'`);
+    }
+
+    const activeStatuses = ['WAITLISTED', 'OFFERED', 'CONFIRMED', 'CHECKED_IN'];
+    const active = await Registration.find({ eventId, status: { $in: activeStatuses } }).select('_id userId');
+    const cancelledAt = new Date();
+    await Registration.updateMany(
+      { eventId, status: { $in: activeStatuses } },
+      { $set: { status: 'CANCELLED', cancelledAt } }
+    );
+    await Event.updateOne({ _id: eventId, status: 'CANCELLED' }, { $set: { heldSeats: 0 } });
+    if (active.length) {
+      await Notification.insertMany(
+        active.map((registration) => ({
+          userId: registration.userId,
+          eventId,
+          type: 'EVENT_CANCELLED',
+          message: `The event “${event.title}” has been cancelled.`,
+        }))
+      );
+    }
+    await AuditLog.create({
+      eventId,
+      actorId: organizerId,
+      action: 'EVENT_CANCELLED',
+      payload: { cancelledRegistrations: active.length },
+    });
+    return Event.findById(eventId);
+  });
 }
 
 async function reconcileEvent(eventId, { recheckMs = 2000, afterFirstCount } = {}) {
@@ -457,6 +568,9 @@ module.exports = {
   declineOffer: (registrationId, userId) => cancelRegistration(registrationId, userId, { offeredOnly: true }),
   claimOffer,
   reconcileEvent,
+  checkInRegistration,
+  markNoShow,
+  cancelEvent,
   getMyRegistrations,
   setPreHeadPopHook,
 };

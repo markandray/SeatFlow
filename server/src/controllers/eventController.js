@@ -1,6 +1,7 @@
 const { z } = require('zod');
 const asyncHandler = require('../utils/asyncHandler');
 const eventService = require('../services/eventService');
+const registrationService = require('../services/registrationService');
 
 const createEventSchema = z.object({
   title: z.string().trim().min(1, 'Title is required').max(200),
@@ -45,6 +46,26 @@ const publishEvent = asyncHandler(async (req, res) => {
   res.status(200).json({ event });
 });
 
+const getMine = asyncHandler(async (req, res) => {
+  const events = await eventService.getOrganizerEvents(req.user._id);
+  res.status(200).json({ events });
+});
+
+const getAttendees = asyncHandler(async (req, res) => {
+  const result = await eventService.getEventAttendees(req.params.id, req.user._id);
+  res.status(200).json(result);
+});
+
+const getAudit = asyncHandler(async (req, res) => {
+  const result = await eventService.getEventAudit(req.params.id, req.user._id, req.query);
+  res.status(200).json(result);
+});
+
+const cancelEvent = asyncHandler(async (req, res) => {
+  const event = await registrationService.cancelEvent(req.params.id, req.user._id);
+  res.status(200).json({ event });
+});
+
 module.exports = {
   createEventSchema,
   updateEventSchema,
@@ -53,4 +74,8 @@ module.exports = {
   getEventById,
   updateEvent,
   publishEvent,
+  getMine,
+  getAttendees,
+  getAudit,
+  cancelEvent,
 };

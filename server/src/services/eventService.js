@@ -63,14 +63,7 @@ async function createEvent(organizerId, data) {
  * List events with search and filters
  */
 async function getEvents(query = {}) {
-  const filter = {};
-
-  // Status filtering (default to PUBLISHED for public list unless explicitly specified)
-  if (query.status) {
-    filter.status = query.status;
-  } else {
-    filter.status = 'PUBLISHED';
-  }
+  const filter = { status: 'PUBLISHED', startsAt: { $gt: new Date() } };
 
   if (query.organizerId) {
     filter.organizerId = query.organizerId;
@@ -84,7 +77,8 @@ async function getEvents(query = {}) {
 
   // Date filtering
   if (query.startsAfter) {
-    filter.startsAt = { ...filter.startsAt, $gt: new Date(query.startsAfter) };
+    const startsAfter = new Date(query.startsAfter);
+    if (startsAfter > filter.startsAt.$gt) filter.startsAt.$gt = startsAfter;
   }
   if (query.startsBefore) {
     filter.startsAt = { ...filter.startsAt, $lt: new Date(query.startsBefore) };
@@ -154,6 +148,82 @@ async function getEventById(eventId, userId = null) {
     waitlistCount,
     myRegistration,
     serverTime: new Date().toISOString(),
+  };
+}
+
+async function getOrganizerEvents(organizerId) {
+  const events = await Event.find({ organizerId }).sort({ startsAt: 1 });
+  if (!events.length) return [];
+
+  const counts = await Registration.aggregate([
+    { $match: { eventId: { $in: events.map((event) => event._id) } } },
+    { $group: { _id: { eventId: '$eventId', status: '$status' }, count: { $sum: 1 } } },
+  ]);
+  const countMap = new Map(
+    counts.map((row) => [`${row._id.eventId.toString()}:${row._id.status}`, row.count])
+  );
+
+  return events.map((event) => ({
+    ...event.toObject(),
+    counts: {
+      confirmed: countMap.get(`${event._id}:CONFIRMED`) || 0,
+      checkedIn: countMap.get(`${event._id}:CHECKED_IN`) || 0,
+      waitlisted: countMap.get(`${event._id}:WAITLISTED`) || 0,
+      offered: countMap.get(`${event._id}:OFFERED`) || 0,
+    },
+    seatsLeft: Math.max(0, event.capacity - event.heldSeats),
+  }));
+}
+
+async function requireOwnedEvent(eventId, organizerId) {
+  const event = await Event.findById(eventId);
+  if (!event) throw new ApiError(404, 'NOT_FOUND', 'Event not found');
+  if (event.organizerId.toString() !== organizerId.toString()) {
+    throw new ApiError(403, 'FORBIDDEN', 'You do not own this event');
+  }
+  return event;
+}
+
+async function getEventAttendees(eventId, organizerId) {
+  await requireOwnedEvent(eventId, organizerId);
+  await refreshEvent(eventId);
+  const event = await Event.findById(eventId);
+  const registrations = await Registration.find({ eventId })
+    .populate('userId', 'name email')
+    .sort({ seq: 1 });
+  const groups = {};
+  for (const registration of registrations) {
+    if (!groups[registration.status]) groups[registration.status] = [];
+    groups[registration.status].push(registration);
+  }
+  return {
+    event,
+    groups,
+    counts: {
+      confirmed: groups.CONFIRMED?.length || 0,
+      checkedIn: groups.CHECKED_IN?.length || 0,
+      waitlisted: groups.WAITLISTED?.length || 0,
+      offered: groups.OFFERED?.length || 0,
+      seatsLeft: Math.max(0, event.capacity - event.heldSeats),
+    },
+  };
+}
+
+async function getEventAudit(eventId, organizerId, { page = 1, limit = 25 } = {}) {
+  await requireOwnedEvent(eventId, organizerId);
+  const total = await AuditLog.countDocuments({ eventId });
+  const logs = await AuditLog.find({ eventId })
+    .populate('actorId', 'name email')
+    .populate('registrationId')
+    .sort({ createdAt: -1, _id: -1 })
+    .skip((page - 1) * limit)
+    .limit(limit);
+  return {
+    logs,
+    page,
+    limit,
+    total,
+    totalPages: Math.ceil(total / limit),
   };
 }
 
@@ -240,7 +310,7 @@ async function updateEvent(eventId, organizerId, data) {
       payload: { newCapacity },
     });
 
-    return ev;
+    return Event.findById(eventId);
   }
 
   const updated = await Event.findOneAndUpdate(
@@ -308,4 +378,7 @@ module.exports = {
   getEventById,
   updateEvent,
   publishEvent,
+  getOrganizerEvents,
+  getEventAttendees,
+  getEventAudit,
 };

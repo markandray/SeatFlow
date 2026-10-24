@@ -26,10 +26,22 @@ const decline = asyncHandler(async (req, res) => {
   res.status(200).json({ registration });
 });
 
+const checkIn = asyncHandler(async (req, res) => {
+  const registration = await registrationService.checkInRegistration(req.params.id, req.user._id);
+  res.status(200).json({ registration });
+});
+
+const noShow = asyncHandler(async (req, res) => {
+  const registration = await registrationService.markNoShow(req.params.id, req.user._id);
+  res.status(200).json({ registration });
+});
+
 module.exports = {
   register,
   getMine,
   cancel,
   claim,
   decline,
+  checkIn,
+  noShow,
 };
