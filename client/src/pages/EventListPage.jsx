@@ -1,34 +1,69 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../services/api';
+import { useAuth } from '../context/AuthContext';
+import useDebouncedValue from '../hooks/useDebouncedValue';
 
 export default function EventListPage() {
+  const { user, loading: authLoading } = useAuth();
   const [events, setEvents] = useState([]);
   const [search, setSearch] = useState('');
+  const [immediateSearch, setImmediateSearch] = useState(null);
+  const [searchRefresh, setSearchRefresh] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const debouncedSearch = useDebouncedValue(search, 300);
+  const query = (immediateSearch === null ? debouncedSearch : immediateSearch).trim();
 
-  const fetchEvents = (searchTerm = '') => {
+  useEffect(() => {
+    let cancelled = false;
     setLoading(true);
+    setError(null);
     api
-      .getEvents({ search: searchTerm })
+      .getEvents({ search: query })
       .then((res) => {
+        if (cancelled) return;
         setEvents(res.events || []);
         setError(null);
       })
       .catch((err) => {
+        if (cancelled) return;
         setError(err.message || 'Failed to load events');
       })
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchEvents();
-  }, []);
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [query, searchRefresh]);
 
   const handleSearchSubmit = (e) => {
     e.preventDefault();
-    fetchEvents(search);
+    setImmediateSearch(search.trim());
+    setSearchRefresh((refresh) => refresh + 1);
+  };
+
+  const handleSearchChange = (value) => {
+    setSearch(value);
+    setImmediateSearch(null);
+  };
+
+  const buttonStyle = { padding: '.7rem 1rem', border: '1px solid var(--border-color)', color: 'var(--text-primary)', borderRadius: 'var(--radius-sm)', textDecoration: 'none', fontWeight: 700 };
+
+  const renderHeroActions = () => {
+    if (authLoading) return null;
+    if (!user) return <>
+      <Link to="/signup" style={{ ...buttonStyle, background: 'var(--accent-primary)', color: '#fff' }}>Sign up</Link>
+      <a href="#events" style={buttonStyle}>Browse events</a>
+    </>;
+    if (user.role === 'organizer') return <>
+      <Link to="/organizer" style={{ ...buttonStyle, background: 'var(--accent-primary)', color: '#fff' }}>Dashboard</Link>
+      <Link to="/organizer/create" style={buttonStyle}>+ Create event</Link>
+      <a href="#events" style={buttonStyle}>Browse events</a>
+    </>;
+    return <>
+      <a href="#events" style={{ ...buttonStyle, background: 'var(--accent-primary)', color: '#fff' }}>Browse events</a>
+      <Link to="/my-registrations" style={buttonStyle}>My registrations</Link>
+    </>;
   };
 
   return (
@@ -42,8 +77,7 @@ export default function EventListPage() {
           <p>Get a timed offer when a seat opens up.</p>
         </div>
         <div style={{ display: 'flex', gap: '.75rem', flexWrap: 'wrap' }}>
-          <Link to="/signup" style={{ padding: '.7rem 1rem', background: 'var(--accent-primary)', color: '#fff', borderRadius: 'var(--radius-sm)', textDecoration: 'none', fontWeight: 700 }}>Sign up</Link>
-          <a href="#events" style={{ padding: '.7rem 1rem', border: '1px solid var(--border-color)', color: 'var(--text-primary)', borderRadius: 'var(--radius-sm)', textDecoration: 'none', fontWeight: 700 }}>Browse events</a>
+          {renderHeroActions()}
         </div>
       </section>
 
@@ -60,7 +94,7 @@ export default function EventListPage() {
             type="text"
             placeholder="Search events..."
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => handleSearchChange(e.target.value)}
             style={{
               padding: '0.6rem 0.9rem',
               borderRadius: 'var(--radius-sm)',
@@ -70,9 +104,9 @@ export default function EventListPage() {
               minWidth: '220px',
             }}
           />
+          {search && <button type="button" aria-label="Clear search" onClick={() => handleSearchChange('')} style={{ border: 0, background: 'transparent', color: 'var(--text-secondary)', fontSize: '1.2rem', cursor: 'pointer', marginLeft: '-2.7rem', zIndex: 1 }}>×</button>}
           <button
             type="submit"
-            disabled={loading}
             style={{
               padding: '0.6rem 1rem',
               background: 'var(--accent-primary)',
@@ -88,7 +122,7 @@ export default function EventListPage() {
         </form>
       </div>
 
-      {loading && (
+      {loading && events.length === 0 && (
         <div style={{ textAlign: 'center', padding: '4rem', color: 'var(--text-muted)' }}>
           Loading events...
         </div>
@@ -119,14 +153,15 @@ export default function EventListPage() {
             color: 'var(--text-secondary)',
           }}
         >
-          <h3>No events found</h3>
+          <h3>{query ? `No events match '${query}'` : 'No events found'}</h3>
           <p style={{ marginTop: '0.5rem', fontSize: '0.9rem' }}>
             Check back later or try adjusting your search keyword.
           </p>
         </div>
       )}
 
-      {!loading && !error && events.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1.5rem' }}>
+      {loading && events.length > 0 && <p aria-live="polite" style={{ margin: '-.7rem 0 1rem', fontSize: '.8rem', color: 'var(--text-muted)' }}>Searching...</p>}
+      {events.length > 0 && <div style={{ opacity: loading ? 0.55 : 1, transition: 'opacity 120ms ease', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1.5rem' }}>
         {events.map((ev) => (
           <Link
             key={ev._id}
@@ -154,7 +189,7 @@ export default function EventListPage() {
                   color: ev.seatsLeft > 0 ? '#34d399' : '#fbbf24',
                 }}
               >
-                {ev.seatsLeft > 0 ? `${ev.seatsLeft} seats left` : 'Waitlist Active'}
+                {ev.seatsLeft > 0 ? `${ev.seatsLeft} ${ev.seatsLeft === 1 ? 'seat' : 'seats'} left` : 'Waitlist Active'}
               </span>
               <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                 Cap: {ev.capacity}
