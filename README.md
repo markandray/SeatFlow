@@ -32,7 +32,7 @@ SeatFlow confirms registrations up to the event's capacity. When an event is ful
 - **Server:** Node.js, Express, Mongoose, node-cron (expiry sweeper and reconciler)
 - **Database:** MongoDB (Atlas in production)
 - **Auth and safety:** JWT, bcryptjs, Zod, Helmet, CORS, express-rate-limit
-- **Testing:** Jest, Supertest, mongodb-memory-server (53 automated tests)
+- **Testing:** Jest, Supertest, mongodb-memory-server (56 automated tests)
 - **Hosting:** Vercel (client), Render (API), MongoDB Atlas (database)
 
 ## Architecture
@@ -213,7 +213,7 @@ The demo data is shared and may be reset from time to time.
 ## Testing
 
 ```sh
-cd server && npm test        # 53 tests, including the concurrency suites
+cd server && npm test        # 56 tests, including the concurrency suites
 cd ../client && npm run build
 ```
 
