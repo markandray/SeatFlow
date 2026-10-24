@@ -194,6 +194,13 @@ describe('Event Management Workflow 1 (/api/events)', () => {
       expect(res.body.events[0]).toHaveProperty('seatsLeft', 10);
     });
 
+    it.each(['(', '[', 'DEMO ('])('search for %s treats regex syntax literally', async (search) => {
+      const res = await request(app).get('/api/events').query({ search });
+      expect(res.statusCode).toBe(200);
+      expect(Array.isArray(res.body.events)).toBe(true);
+      await checkInvariants(publishedEventId);
+    });
+
     it('GET /api/events/:id returns seatsLeft, waitlistCount, serverTime, and myRegistration', async () => {
       // Unauthenticated read
       const publicRes = await request(app).get(`/api/events/${publishedEventId}`);

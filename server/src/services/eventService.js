@@ -70,8 +70,10 @@ async function getEvents(query = {}) {
   }
 
   // Search keyword in title or description
-  if (query.search && query.search.trim()) {
-    const searchRegex = new RegExp(query.search.trim(), 'i');
+  if (typeof query.search === 'string' && query.search.trim()) {
+    const searchTerm = query.search.trim().slice(0, 100);
+    const escapedSearchTerm = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const searchRegex = new RegExp(escapedSearchTerm, 'i');
     filter.$or = [{ title: searchRegex }, { description: searchRegex }];
   }
 
