@@ -170,3 +170,33 @@ body {
   color: var(--text-muted);
   border-top: 1px solid var(--border-color);
 }
+
+.button-secondary {
+  padding: 0.45rem 0.8rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.button-secondary:hover:not(:disabled) {
+  background: var(--bg-primary);
+  border-color: var(--border-hover);
+}
+
+.button-secondary:disabled {
+  color: var(--text-muted);
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.status-badge-cancelled {
+  margin: 0;
+  padding: 0.1rem 0.5rem;
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.3);
+}

@@ -137,7 +137,12 @@ export default function OrganizerDashboardPage() {
       <div style={{ display: 'grid', gap: '1rem', marginTop: '1.25rem' }}>
         {events.map((event) => (
           <section key={event._id} style={{ padding: '1.25rem', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)' }}>
-            {editingId === event._id ? (
+            {editingId === event._id && event.status === 'CANCELLED' ? (
+              <div role="status" style={{ display: 'grid', gap: '.5rem' }}>
+                <strong>Cancelled events cannot be edited</strong>
+                <Link to="/organizer">Back to dashboard</Link>
+              </div>
+            ) : editingId === event._id ? (
               <div style={{ display: 'grid', gap: '0.75rem' }}>
                 {['title', 'description', 'location', 'capacity', 'startsAt', 'registrationDeadline'].map((field) => (
                   <label key={field} style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
@@ -162,20 +167,23 @@ export default function OrganizerDashboardPage() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
                   <div>
                     <h2 style={{ fontSize: '1.2rem' }}>{event.title}</h2>
-                    <p style={{ color: 'var(--text-secondary)' }}>{event.status} · {new Date(event.startsAt).toLocaleString()}</p>
+                    <p style={{ color: 'var(--text-secondary)' }}>
+                      {event.status === 'CANCELLED' ? <span className="status-badge status-badge-cancelled">Cancelled</span> : event.status}
+                      {' · '}{new Date(event.startsAt).toLocaleString()}
+                    </p>
                     <p style={{ color: 'var(--text-secondary)' }}>
                       Confirmed {event.counts.confirmed} · Checked in {event.counts.checkedIn} · Offered {event.counts.offered} · Waitlisted {event.counts.waitlisted} · Seats left {event.seatsLeft}
                     </p>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', flexWrap: 'wrap' }}>
-                    <button disabled={Boolean(busyKey)} onClick={() => startEdit(event)}>Edit</button>
+                    {event.status !== 'CANCELLED' && <button className="button-secondary" disabled={Boolean(busyKey)} onClick={() => startEdit(event)}>Edit</button>}
                     {event.status === 'DRAFT' && <button disabled={Boolean(busyKey)} onClick={() => runAction(`publish-${event._id}`, () => api.publishEvent(event._id), 'Event published.')}>Publish</button>}
                     {event.status !== 'CANCELLED' && <button disabled={Boolean(busyKey)} onClick={() => {
                       if (window.confirm(`Cancel “${event.title}” and notify all registered students?`)) {
                         runAction(`cancel-${event._id}`, () => api.cancelEvent(event._id), 'Event cancelled.');
                       }
                     }}>Cancel event</button>}
-                    <button disabled={panelLoading} onClick={() => openEvent(event)}>Attendees & audit</button>
+                    {(event.status === 'PUBLISHED' || event.status === 'CANCELLED') && <button className="button-secondary" disabled={panelLoading} onClick={() => openEvent(event)}>Attendees & audit</button>}
                   </div>
                 </div>
               </>
@@ -188,7 +196,7 @@ export default function OrganizerDashboardPage() {
         <section style={{ marginTop: '2rem', padding: '1.25rem', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', alignItems: 'center' }}>
             <h2>{selectedEvent.title}: attendees and audit log</h2>
-            <button disabled={panelLoading} onClick={() => { setSelectedId(null); setAttendees(null); setAudit(null); }}>Close</button>
+            <button className="button-secondary" disabled={panelLoading} onClick={() => { setSelectedId(null); setAttendees(null); setAudit(null); }}>Close</button>
           </div>
           {panelLoading && <p>Refreshing attendees and audit log…</p>}
           {attendees && (
@@ -207,8 +215,8 @@ export default function OrganizerDashboardPage() {
                         <div key={registration._id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap', padding: '0.65rem', borderBottom: '1px solid var(--border-color)' }}>
                           <span>{registration.userId?.name} · {registration.userId?.email}</span>
                           <span style={{ display: 'flex', gap: '0.5rem' }}>
-                            {status === 'CONFIRMED' && <button disabled={Boolean(busyKey)} onClick={() => runAction(`checkin-${registration._id}`, () => api.checkInRegistration(registration._id), 'Attendee checked in.')}>Check in</button>}
-                            {status === 'CONFIRMED' && (
+                            {selectedEvent.status !== 'CANCELLED' && status === 'CONFIRMED' && <button disabled={Boolean(busyKey)} onClick={() => runAction(`checkin-${registration._id}`, () => api.checkInRegistration(registration._id), 'Attendee checked in.')}>Check in</button>}
+                            {selectedEvent.status !== 'CANCELLED' && status === 'CONFIRMED' && (
                               <span title={tooEarly ? 'No-show can be recorded after the event starts' : undefined}>
                                 <button
                                   title={tooEarly ? 'No-show can be recorded after the event starts' : 'Mark attendee as no-show'}
@@ -237,9 +245,9 @@ export default function OrganizerDashboardPage() {
                 </div>
               ))}
               <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem', alignItems: 'center' }}>
-                <button disabled={audit.page <= 1 || panelLoading} onClick={() => loadPanels(selectedEvent._id, audit.page - 1)}>Previous</button>
+                <button className="button-secondary" disabled={audit.page <= 1 || panelLoading} onClick={() => loadPanels(selectedEvent._id, audit.page - 1)}>Previous</button>
                 <span>Page {audit.page} of {Math.max(1, audit.totalPages)}</span>
-                <button disabled={audit.page >= audit.totalPages || panelLoading} onClick={() => loadPanels(selectedEvent._id, audit.page + 1)}>Next</button>
+                <button className="button-secondary" disabled={audit.page >= audit.totalPages || panelLoading} onClick={() => loadPanels(selectedEvent._id, audit.page + 1)}>Next</button>
               </div>
             </div>
           )}
