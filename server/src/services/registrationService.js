@@ -442,6 +442,13 @@ async function markNoShow(registrationId, organizerId) {
 }
 
 async function cancelEvent(eventId, organizerId) {
+  // Check ownership before status diagnosis so non-owners never learn event state.
+  const ownedEvent = await Event.findById(eventId);
+  if (!ownedEvent) throw new ApiError(404, 'NOT_FOUND', 'Event not found');
+  if (ownedEvent.organizerId.toString() !== organizerId.toString()) {
+    throw new ApiError(403, 'FORBIDDEN', 'You do not own this event');
+  }
+
   return withLock(String(eventId), async () => {
     const event = await Event.findOneAndUpdate(
       { _id: eventId, organizerId, status: { $in: ['DRAFT', 'PUBLISHED'] } },
@@ -453,6 +460,9 @@ async function cancelEvent(eventId, organizerId) {
       if (!existing) throw new ApiError(404, 'NOT_FOUND', 'Event not found');
       if (existing.organizerId.toString() !== organizerId.toString()) {
         throw new ApiError(403, 'FORBIDDEN', 'You do not own this event');
+      }
+      if (existing.status === 'CANCELLED') {
+        throw new ApiError(409, 'EVENT_CANCELLED', 'Cancelled events cannot be changed');
       }
       throw new ApiError(409, 'INVALID_STATUS', `Cannot cancel event in status '${existing.status}'`);
     }

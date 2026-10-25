@@ -266,6 +266,54 @@ describe('Organizer tools and Session 4 invariants', () => {
     await checkInvariants(event._id);
   });
 
+  it('cancelled events reject edits, capacity changes, publishing, and repeat cancellation without side effects', async () => {
+    const event = await makeEvent({ title: 'Read Only Event' });
+    await Registration.create({ eventId: event._id, userId: student._id, status: 'WAITLISTED', seq: 1 });
+    const firstCancel = await request(app)
+      .post(`/api/events/${event._id}/cancel`)
+      .set('Authorization', `Bearer ${organizerToken}`);
+    expect(firstCancel.statusCode).toBe(200);
+
+    const auditCount = await AuditLog.countDocuments({ eventId: event._id, action: 'EVENT_CANCELLED' });
+    const notificationCount = await Notification.countDocuments({ eventId: event._id, type: 'EVENT_CANCELLED' });
+    expect(auditCount).toBe(1);
+    expect(notificationCount).toBe(1);
+
+    const attempts = [
+      request(app).patch(`/api/events/${event._id}`).set('Authorization', `Bearer ${organizerToken}`).send({ title: 'Changed' }),
+      request(app).patch(`/api/events/${event._id}`).set('Authorization', `Bearer ${organizerToken}`).send({ capacity: 9 }),
+      request(app).post(`/api/events/${event._id}/publish`).set('Authorization', `Bearer ${organizerToken}`),
+      request(app).post(`/api/events/${event._id}/cancel`).set('Authorization', `Bearer ${organizerToken}`),
+    ];
+    for (const attempt of attempts) {
+      const response = await attempt;
+      expect(response.statusCode).toBe(409);
+      expect(response.body.error.code).toBe('EVENT_CANCELLED');
+      expect(response.body.error.message).toBe('Cancelled events cannot be changed');
+    }
+
+    const unchanged = await Event.findById(event._id);
+    expect(unchanged.title).toBe('Read Only Event');
+    expect(unchanged.capacity).toBe(5);
+    expect(unchanged.status).toBe('CANCELLED');
+    expect(await AuditLog.countDocuments({ eventId: event._id, action: 'EVENT_CANCELLED' })).toBe(auditCount);
+    expect(await Notification.countDocuments({ eventId: event._id, type: 'EVENT_CANCELLED' })).toBe(notificationCount);
+    await checkInvariants(event._id);
+  });
+
+  it('another organizer receives 403 for all changes to a cancelled event', async () => {
+    const event = await makeEvent({ status: 'CANCELLED' });
+    const attempts = [
+      request(app).patch(`/api/events/${event._id}`).set('Authorization', `Bearer ${otherOrganizerToken}`).send({ title: 'Changed' }),
+      request(app).patch(`/api/events/${event._id}`).set('Authorization', `Bearer ${otherOrganizerToken}`).send({ capacity: 9 }),
+      request(app).post(`/api/events/${event._id}/publish`).set('Authorization', `Bearer ${otherOrganizerToken}`),
+      request(app).post(`/api/events/${event._id}/cancel`).set('Authorization', `Bearer ${otherOrganizerToken}`),
+    ];
+    for (const attempt of attempts) expect((await attempt).statusCode).toBe(403);
+    expect((await Event.findById(event._id)).status).toBe('CANCELLED');
+    await checkInvariants(event._id);
+  });
+
   it('serializes event cancellation behind an in-flight allocation without leaving a held seat', async () => {
     const event = await makeEvent({ capacity: 1 });
     let signalHeadPop;

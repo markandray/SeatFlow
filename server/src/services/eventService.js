@@ -186,6 +186,18 @@ async function requireOwnedEvent(eventId, organizerId) {
   return event;
 }
 
+async function diagnoseFailedEventMutation(eventId, organizerId, fallbackError) {
+  const event = await Event.findById(eventId);
+  if (!event) throw new ApiError(404, 'NOT_FOUND', 'Event not found');
+  if (event.organizerId.toString() !== organizerId.toString()) {
+    throw new ApiError(403, 'FORBIDDEN', 'You do not own this event');
+  }
+  if (event.status === 'CANCELLED') {
+    throw new ApiError(409, 'EVENT_CANCELLED', 'Cancelled events cannot be changed');
+  }
+  throw fallbackError(event);
+}
+
 async function getEventAttendees(eventId, organizerId) {
   await requireOwnedEvent(eventId, organizerId);
   await refreshEvent(eventId);
@@ -233,14 +245,7 @@ async function getEventAudit(eventId, organizerId, { page = 1, limit = 25 } = {}
  * Update event details or capacity (organizer only, owner check)
  */
 async function updateEvent(eventId, organizerId, data) {
-  const existing = await Event.findById(eventId);
-  if (!existing) {
-    throw new ApiError(404, 'NOT_FOUND', 'Event not found');
-  }
-
-  if (existing.organizerId.toString() !== organizerId.toString()) {
-    throw new ApiError(403, 'FORBIDDEN', 'You do not own this event');
-  }
+  const existing = await requireOwnedEvent(eventId, organizerId);
 
   const updateFields = {};
   if (data.title !== undefined) updateFields.title = data.title;
@@ -288,6 +293,7 @@ async function updateEvent(eventId, organizerId, data) {
       {
         _id: eventId,
         organizerId,
+        status: { $in: ['DRAFT', 'PUBLISHED'] },
         heldSeats: { $lte: newCapacity },
       },
       { $set: updateFields },
@@ -295,11 +301,12 @@ async function updateEvent(eventId, organizerId, data) {
     );
 
     if (!ev) {
-      throw new ApiError(
-        409,
-        'CAPACITY_TOO_LOW',
-        'Capacity cannot be below seats already held'
-      );
+      return diagnoseFailedEventMutation(eventId, organizerId, (current) => {
+        if (!['DRAFT', 'PUBLISHED'].includes(current.status)) {
+          return new ApiError(409, 'INVALID_STATUS', `Cannot update event in status '${current.status}'`);
+        }
+        return new ApiError(409, 'CAPACITY_TOO_LOW', 'Capacity cannot be below seats already held');
+      });
     }
 
     // A capacity increase must hand the new seats to the waitlist (Section 6.6)
@@ -316,10 +323,15 @@ async function updateEvent(eventId, organizerId, data) {
   }
 
   const updated = await Event.findOneAndUpdate(
-    { _id: eventId, organizerId },
+    { _id: eventId, organizerId, status: { $in: ['DRAFT', 'PUBLISHED'] } },
     { $set: updateFields },
     { new: true }
   );
+  if (!updated) {
+    return diagnoseFailedEventMutation(eventId, organizerId, (current) =>
+      new ApiError(409, 'INVALID_STATUS', `Cannot update event in status '${current.status}'`)
+    );
+  }
 
   await AuditLog.create({
     eventId,
@@ -335,18 +347,7 @@ async function updateEvent(eventId, organizerId, data) {
  * Publish draft event (organizer owner only)
  */
 async function publishEvent(eventId, organizerId) {
-  const existing = await Event.findById(eventId);
-  if (!existing) {
-    throw new ApiError(404, 'NOT_FOUND', 'Event not found');
-  }
-
-  if (existing.organizerId.toString() !== organizerId.toString()) {
-    throw new ApiError(403, 'FORBIDDEN', 'You do not own this event');
-  }
-
-  if (existing.status === 'PUBLISHED') {
-    return existing;
-  }
+  await requireOwnedEvent(eventId, organizerId);
 
   const ev = await Event.findOneAndUpdate(
     { _id: eventId, organizerId, status: 'DRAFT' },
@@ -355,10 +356,8 @@ async function publishEvent(eventId, organizerId) {
   );
 
   if (!ev) {
-    throw new ApiError(
-      409,
-      'INVALID_STATUS',
-      `Cannot publish event in status '${existing.status}'`
+    return diagnoseFailedEventMutation(eventId, organizerId, (current) =>
+      new ApiError(409, 'INVALID_STATUS', `Cannot publish event in status '${current.status}'`)
     );
   }
 
