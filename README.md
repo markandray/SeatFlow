@@ -4,6 +4,8 @@ Fair, capacity-safe event registration with a first-in-first-out waitlist and ti
 
 **Live app:** https://seat-flow-delta.vercel.app  |  **API health:** https://seatflow-92rg.onrender.com/api/health  |  **Demo logins:** see [Deployment](#deployment)
 
+**Demo video:** [Watch the SeatFlow walkthrough](https://drive.google.com/file/d/1_ETRe6XYLPd3F5-LBgS7ThMdby8ioLWa/view?usp=sharing)
+
 ## Problem Statement
 
 Popular campus workshops and fest events fill within minutes. People who miss out have no fair queue: seats freed by cancellations go to whoever refreshes fastest, or stay empty because nobody tells the next person. Organizers meanwhile track registrations and no-shows by hand.
