@@ -31,6 +31,7 @@ export default function OrganizerDashboardPage() {
   const [panelLoading, setPanelLoading] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editValues, setEditValues] = useState(null);
+  const [cancelDialogEvent, setCancelDialogEvent] = useState(null);
 
   const loadEvents = useCallback(async () => {
     try {
@@ -120,7 +121,7 @@ export default function OrganizerDashboardPage() {
   }
 
   return (
-    <div style={{ maxWidth: 1100, margin: '2rem auto', padding: '0 1.5rem' }}>
+    <div style={{ maxWidth: 1100, margin: '2rem auto', padding: '0.75rem 1.5rem 0' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
         <div>
           <h1 style={{ fontSize: '1.85rem', fontWeight: 800 }}>Organizer Dashboard</h1>
@@ -158,8 +159,8 @@ export default function OrganizerDashboardPage() {
                   </label>
                 ))}
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <button disabled={busyKey === `edit-${event._id}`} onClick={() => saveEdit(event._id)}>Save changes</button>
-                  <button disabled={busyKey === `edit-${event._id}`} onClick={() => { setEditingId(null); setEditValues(null); }}>Discard</button>
+                  <button className="button-primary" disabled={busyKey === `edit-${event._id}`} onClick={() => saveEdit(event._id)}>Save changes</button>
+                  <button className="button-secondary" disabled={busyKey === `edit-${event._id}`} onClick={() => { setEditingId(null); setEditValues(null); }}>Discard</button>
                 </div>
               </div>
             ) : (
@@ -177,12 +178,8 @@ export default function OrganizerDashboardPage() {
                   </div>
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', flexWrap: 'wrap' }}>
                     {event.status !== 'CANCELLED' && <button className="button-secondary" disabled={Boolean(busyKey)} onClick={() => startEdit(event)}>Edit</button>}
-                    {event.status === 'DRAFT' && <button disabled={Boolean(busyKey)} onClick={() => runAction(`publish-${event._id}`, () => api.publishEvent(event._id), 'Event published.')}>Publish</button>}
-                    {event.status !== 'CANCELLED' && <button disabled={Boolean(busyKey)} onClick={() => {
-                      if (window.confirm(`Cancel “${event.title}” and notify all registered students?`)) {
-                        runAction(`cancel-${event._id}`, () => api.cancelEvent(event._id), 'Event cancelled.');
-                      }
-                    }}>Cancel event</button>}
+                    {event.status === 'DRAFT' && <button className="button-primary" disabled={Boolean(busyKey)} onClick={() => runAction(`publish-${event._id}`, () => api.publishEvent(event._id), 'Event published.')}>Publish</button>}
+                    {event.status !== 'CANCELLED' && <button className="button-danger" disabled={Boolean(busyKey)} onClick={() => setCancelDialogEvent(event)}>Cancel event</button>}
                     {(event.status === 'PUBLISHED' || event.status === 'CANCELLED') && <button className="button-secondary" disabled={panelLoading} onClick={() => openEvent(event)}>Attendees & audit</button>}
                   </div>
                 </div>
@@ -215,10 +212,11 @@ export default function OrganizerDashboardPage() {
                         <div key={registration._id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap', padding: '0.65rem', borderBottom: '1px solid var(--border-color)' }}>
                           <span>{registration.userId?.name} · {registration.userId?.email}</span>
                           <span style={{ display: 'flex', gap: '0.5rem' }}>
-                            {selectedEvent.status !== 'CANCELLED' && status === 'CONFIRMED' && <button disabled={Boolean(busyKey)} onClick={() => runAction(`checkin-${registration._id}`, () => api.checkInRegistration(registration._id), 'Attendee checked in.')}>Check in</button>}
+                            {selectedEvent.status !== 'CANCELLED' && status === 'CONFIRMED' && <button className="button-secondary" disabled={Boolean(busyKey)} onClick={() => runAction(`checkin-${registration._id}`, () => api.checkInRegistration(registration._id), 'Attendee checked in.')}>Check in</button>}
                             {selectedEvent.status !== 'CANCELLED' && status === 'CONFIRMED' && (
                               <span title={tooEarly ? 'No-show can be recorded after the event starts' : undefined}>
                                 <button
+                                  className="button-secondary"
                                   title={tooEarly ? 'No-show can be recorded after the event starts' : 'Mark attendee as no-show'}
                                   disabled={Boolean(busyKey) || tooEarly}
                                   onClick={() => runAction(`noshow-${registration._id}`, () => api.markNoShow(registration._id), 'Attendee marked no-show.')}
@@ -252,6 +250,23 @@ export default function OrganizerDashboardPage() {
             </div>
           )}
         </section>
+      )}
+
+      {cancelDialogEvent && (
+        <div role="presentation" style={{ position: 'fixed', inset: 0, zIndex: 100, display: 'grid', placeItems: 'center', padding: '1rem', background: 'rgba(2, 6, 23, .72)' }}>
+          <section role="alertdialog" aria-modal="true" aria-labelledby="cancel-event-title" style={{ width: 'min(440px, 100%)', padding: '1.5rem', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', boxShadow: '0 20px 50px rgba(0, 0, 0, .45)' }}>
+            <h2 id="cancel-event-title" style={{ fontSize: '1.2rem', marginBottom: '.5rem' }}>Cancel event?</h2>
+            <p style={{ color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>Cancel “{cancelDialogEvent.title}” and notify all registered students?</p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.5rem' }}>
+              <button className="button-secondary" disabled={Boolean(busyKey)} onClick={() => setCancelDialogEvent(null)}>Keep event</button>
+              <button className="button-danger" disabled={Boolean(busyKey)} onClick={() => {
+                const eventToCancel = cancelDialogEvent;
+                setCancelDialogEvent(null);
+                runAction(`cancel-${eventToCancel._id}`, () => api.cancelEvent(eventToCancel._id), 'Event cancelled.');
+              }}>Confirm cancellation</button>
+            </div>
+          </section>
+        </div>
       )}
     </div>
   );

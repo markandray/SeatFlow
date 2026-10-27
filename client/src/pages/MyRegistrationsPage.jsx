@@ -98,12 +98,12 @@ export default function MyRegistrationsPage() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                   {reg.status === 'OFFERED' && (
                     <>
-                      <button disabled={isBusy || remaining === 0} onClick={() => handleAction(reg._id, 'claim')}>Claim</button>
-                      <button disabled={isBusy} onClick={() => handleAction(reg._id, 'decline')}>Decline</button>
+                      <button className="button-primary" disabled={isBusy || remaining === 0} onClick={() => handleAction(reg._id, 'claim')}>Claim</button>
+                      <button className="button-secondary" disabled={isBusy} onClick={() => handleAction(reg._id, 'decline')}>Decline</button>
                     </>
                   )}
                   {activeStatuses.includes(reg.status) && (
-                    <button disabled={isBusy} onClick={() => handleAction(reg._id, 'cancel')}>
+                    <button className="button-danger" disabled={isBusy} onClick={() => handleAction(reg._id, 'cancel')}>
                       {reg.status === 'WAITLISTED' ? 'Cancel' : 'Cancel registration'}
                     </button>
                   )}
