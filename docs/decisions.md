@@ -183,6 +183,7 @@ There is no delete endpoint. Organizers cancel events, and cancelled events rema
 ### Rationale
 - Deleting an event would orphan registrations, notifications, and the audit log. Cancelling keeps the history intact and gives attendees a clear message and a notification.
 
+Cancelled events are read-only: edit, capacity change, publish, and repeat cancellation return 409 EVENT_CANCELLED (enforced by guarded updates, with ownership checked first), while attendees and the audit log stay viewable.
 ---
 
 ## 15. Demo Data and Cleanup Tooling

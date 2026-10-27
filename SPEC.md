@@ -244,6 +244,7 @@ A crash between a `heldSeats` change and the registration update could leave the
 2. `updateMany` all active registrations to `CANCELLED`, set `heldSeats = 0`.
 3. `insertMany` an `EVENT_CANCELLED` notification for each affected user, and one audit entry.
 The whole sequence runs inside `withLock(String(eventId), ...)`. The mutex is NOT re-entrant: nothing inside a `withLock` callback may call `allocate()` or `refreshEvent()` for the same event (deadlock). Use direct guarded updates only.
+4. Cancelled events are read-only: edit, capacity change, publish, and repeat cancellation return 409 EVENT_CANCELLED (enforced by guarded updates, with ownership checked first), while attendees and the audit log stay viewable.
 
 ## 7. The five workflows
 
